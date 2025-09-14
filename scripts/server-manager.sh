@@ -45,12 +45,43 @@ log_message() {
 check_python_env() {
     if [ ! -d "$VENV_PATH" ]; then
         log_message "ERROR" "Virtual environment not found at $VENV_PATH"
-        log_message "INFO" "Run 'make setup' to initialize the environment"
-        exit 1
+        log_message "INFO" "🔧 Attempting to set up environment automatically..."
+        
+        # Check if Makefile exists
+        if [ -f "$PROJECT_ROOT/Makefile" ]; then
+            log_message "INFO" "Running 'make setup' to initialize environment..."
+            cd "$PROJECT_ROOT"
+            make setup
+            
+            if [ -d "$VENV_PATH" ]; then
+                log_message "INFO" "✅ Virtual environment created successfully"
+            else
+                log_message "ERROR" "❌ Failed to create virtual environment"
+                log_message "INFO" "Please run 'make setup' manually from $PROJECT_ROOT"
+                exit 1
+            fi
+        else
+            log_message "ERROR" "Makefile not found. Cannot auto-setup environment"
+            log_message "INFO" "Please run the following commands manually:"
+            log_message "INFO" "  cd $PROJECT_ROOT"
+            log_message "INFO" "  python3 -m venv .venv"
+            log_message "INFO" "  source .venv/bin/activate"
+            log_message "INFO" "  pip install -e .[dev]"
+            exit 1
+        fi
     fi
     
     if [ ! -f "$PROJECT_ROOT/.env" ]; then
-        log_message "WARN" ".env file not found. Copy env.example to .env and configure API keys"
+        log_message "WARN" ".env file not found"
+        
+        if [ -f "$PROJECT_ROOT/.env.example" ]; then
+            log_message "INFO" "📋 Creating .env from .env.example template..."
+            cp "$PROJECT_ROOT/.env.example" "$PROJECT_ROOT/.env"
+            log_message "WARN" "⚠️  Please edit .env file and add your API keys before starting"
+            log_message "INFO" "Edit: nano $PROJECT_ROOT/.env"
+        else
+            log_message "WARN" "❌ .env.example not found. Please create .env file manually"
+        fi
     fi
 }
 
@@ -67,7 +98,7 @@ start_scanner() {
     cd "$PROJECT_ROOT"
     
     # Run scanner in background
-    nohup python -m src.app scan > "$TRADING_LOG" 2>&1 &
+    nohup python3 -m src.app scan > "$TRADING_LOG" 2>&1 &
     echo $! > "$LOG_DIR/scanner.pid"
     
     log_message "INFO" "Market scanner started (PID: $(cat $LOG_DIR/scanner.pid))"
@@ -93,7 +124,7 @@ run_health_check() {
     activate_venv
     
     cd "$PROJECT_ROOT"
-    python -m src.app health
+    python3 -m src.app health
 }
 
 show_status() {
@@ -180,12 +211,47 @@ backup_data() {
     find "$backup_dir" -name "trading_backup_*.tar.gz" -mtime +7 -delete
 }
 
+setup_environment() {
+    log_message "INFO" "🚀 Setting up Upbit Trading System environment..."
+    
+    cd "$PROJECT_ROOT"
+    
+    # Run setup
+    if [ -f "Makefile" ]; then
+        log_message "INFO" "📦 Installing dependencies..."
+        make setup
+    else
+        log_message "WARN" "Makefile not found, running manual setup..."
+        python3 -m venv .venv
+        source .venv/bin/activate
+        pip install --upgrade pip
+        pip install -e .[dev]
+    fi
+    
+    # Create .env file
+    if [ ! -f ".env" ] && [ -f ".env.example" ]; then
+        log_message "INFO" "📋 Creating .env configuration file..."
+        cp .env.example .env
+        log_message "INFO" "✅ .env file created from template"
+    fi
+    
+    # Create directories
+    mkdir -p runtime/logs runtime/reports runtime/data
+    
+    log_message "INFO" "🎉 Setup completed!"
+    log_message "WARN" "⚠️  Next steps:"
+    log_message "INFO" "1. Edit .env file with your API keys: nano .env"
+    log_message "INFO" "2. Test the setup: $0 health"
+    log_message "INFO" "3. Start the system: $0 start"
+}
+
 show_help() {
     echo "Upbit Trading System - Server Manager"
     echo ""
     echo "Usage: $0 <command> [options]"
     echo ""
     echo "Commands:"
+    echo "  setup           Set up the environment (run this first!)"
     echo "  start           Start the trading system scanner"
     echo "  stop            Stop all running services"
     echo "  restart         Restart all services"
@@ -196,6 +262,7 @@ show_help() {
     echo "  help            Show this help message"
     echo ""
     echo "Examples:"
+    echo "  $0 setup        # First time setup"
     echo "  $0 start        # Start scanner"
     echo "  $0 logs trading # View trading logs"
     echo "  $0 health       # Test API connectivity"
@@ -204,6 +271,9 @@ show_help() {
 
 # Main command dispatcher
 case "${1:-}" in
+    "setup")
+        setup_environment
+        ;;
     "start")
         start_scanner
         ;;
