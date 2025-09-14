@@ -1,0 +1,475 @@
+---
+globs: tests/*.py,test_*.py
+description: Trading system testing standards and patterns
+---
+
+# 트레이딩 시스템 테스팅 표준
+
+## 🧪 테스트 전략 개요
+
+### 1. 테스트 피라미드
+```
+    E2E Tests (적음)
+   ─────────────────
+  Integration Tests (보통) 
+ ─────────────────────────
+Unit Tests (많음)
+```
+
+- **Unit Tests (70%)**: 개별 함수/클래스 테스트
+- **Integration Tests (20%)**: 모듈 간 상호작용 테스트  
+- **E2E Tests (10%)**: 전체 시스템 플로우 테스트
+
+### 2. 테스트 분류별 디렉토리
+```
+tests/
+├── unit/                    # 단위 테스트
+│   ├── test_features.py     # 피처 계산 테스트
+│   ├── test_scanner.py      # 스캐너 로직 테스트
+│   ├── test_signals.py      # 신호 생성 테스트
+│   └── test_risk.py         # 리스크 관리 테스트
+├── integration/             # 통합 테스트
+│   ├── test_api_integration.py    # API 연동 테스트
+│   ├── test_data_pipeline.py      # 데이터 파이프라인 테스트
+│   └── test_order_flow.py         # 주문 플로우 테스트
+├── fixtures/                # 테스트 데이터
+│   ├── sample_candles.json
+│   ├── sample_orderbook.json
+│   └── mock_responses.py
+└── conftest.py             # 공통 픽스처
+```
+
+## 🔧 테스트 픽스처 및 Mock 패턴
+
+### 1. 공통 픽스처 (conftest.py)
+```python
+import pytest
+import pandas as pd
+from datetime import datetime, timedelta
+from src.utils.config import Config
+
+@pytest.fixture
+def sample_config():
+    """테스트용 설정."""
+    return Config(
+        exchange={
+            "base_url": "https://api.upbit.com",
+            "timeout": 30
+        },
+        scanner={
+            "rvol_threshold": 2.0,
+            "spread_bp_max": 5
+        }
+    )
+
+@pytest.fixture
+def sample_candles():
+    """테스트용 캔들 데이터 (200개)."""
+    base_time = datetime(2024, 1, 1, 9, 0)
+    dates = [base_time + timedelta(minutes=5*i) for i in range(200)]
+    
+    return pd.DataFrame({
+        'candle_date_time_kst': dates,
+        'opening_price': [10000 + i for i in range(200)],
+        'high_price': [10050 + i for i in range(200)],
+        'low_price': [9950 + i for i in range(200)],
+        'trade_price': [10000 + i for i in range(200)],
+        'candle_acc_trade_volume': [1000 + i*10 for i in range(200)]
+    })
+
+@pytest.fixture
+def sample_orderbook():
+    """테스트용 오더북 데이터."""
+    return {
+        "market": "KRW-BTC",
+        "timestamp": 1640995200000,
+        "orderbook_units": [
+            {
+                "ask_price": 52000000,
+                "bid_price": 51990000,
+                "ask_size": 0.1,
+                "bid_size": 0.15
+            }
+        ]
+    }
+```
+
+### 2. API Mock 패턴
+```python
+import pytest
+from unittest.mock import AsyncMock, Mock, patch
+import httpx
+
+@pytest.fixture
+def mock_upbit_client():
+    """Upbit 클라이언트 Mock."""
+    client = Mock()
+    client.get_markets = AsyncMock(return_value=[
+        {"market": "KRW-BTC", "korean_name": "비트코인"},
+        {"market": "KRW-ETH", "korean_name": "이더리움"}
+    ])
+    client.get_candles = AsyncMock()
+    client.get_orderbook = AsyncMock()
+    return client
+
+class TestAPIIntegration:
+    @pytest.mark.asyncio 
+    async def test_api_timeout_handling(self):
+        """API 타임아웃 처리 테스트."""
+        with patch('httpx.AsyncClient.get') as mock_get:
+            mock_get.side_effect = httpx.TimeoutException("Request timeout")
+            
+            from src.api.upbit_rest import UpbitRestClient
+            client = UpbitRestClient("https://api.upbit.com")
+            
+            with pytest.raises(Exception, match="timeout"):
+                await client.get_markets()
+```
+
+## 📊 피처 계산 테스트 패턴
+
+### 1. RVOL 계산 테스트
+```python
+import pytest
+import pandas as pd
+from src.data.features import FeatureCalculator
+
+class TestFeatureCalculator:
+    
+    def test_rvol_calculation_normal_case(self, sample_candles):
+        """정상 케이스 RVOL 계산."""
+        calc = FeatureCalculator()
+        volumes = sample_candles['candle_acc_trade_volume']
+        
+        rvol = calc.calculate_rvol(volumes)
+        
+        assert isinstance(rvol, float)
+        assert rvol > 0
+        
+        # 마지막 거래량이 평균보다 높으므로 RVOL > 1
+        expected = volumes.iloc[-1] / volumes.iloc[-21:-1].mean()
+        assert abs(rvol - expected) < 0.001
+    
+    def test_rvol_insufficient_data(self):
+        """데이터 부족 시 RVOL 계산."""
+        calc = FeatureCalculator()
+        volumes = pd.Series([1000, 1100, 1200])  # 21개 미만
+        
+        rvol = calc.calculate_rvol(volumes)
+        
+        assert rvol == 1.0  # 기본값 반환
+    
+    def test_rvol_zero_average(self):
+        """평균 거래량이 0인 경우."""
+        calc = FeatureCalculator()
+        volumes = pd.Series([0] * 20 + [100])
+        
+        rvol = calc.calculate_rvol(volumes)
+        
+        assert rvol == 1.0  # 0으로 나누기 방지
+```
+
+### 2. 상대강도(RS) 계산 테스트
+```python
+def test_relative_strength_calculation(self, sample_candles):
+    """상대강도 계산 테스트."""
+    calc = FeatureCalculator()
+    
+    # BTC 가격 데이터
+    btc_prices = sample_candles['trade_price'] * 0.9  # 심볼보다 낮은 수익률
+    symbol_prices = sample_candles['trade_price']
+    
+    rs = calc.calculate_relative_strength(symbol_prices, btc_prices, window=60)
+    
+    assert isinstance(rs, float)
+    # 심볼이 BTC보다 성과가 좋으므로 RS > 0
+    assert rs > 0
+
+def test_svwap_calculation(self, sample_candles):
+    """세션 VWAP 계산 테스트."""
+    calc = FeatureCalculator()
+    
+    svwap = calc.calculate_session_vwap(
+        sample_candles['trade_price'],
+        sample_candles['candle_acc_trade_volume']
+    )
+    
+    assert isinstance(svwap, float)
+    assert svwap > 0
+    
+    # 수동 계산과 비교
+    total_value = (sample_candles['trade_price'] * sample_candles['candle_acc_trade_volume']).sum()
+    total_volume = sample_candles['candle_acc_trade_volume'].sum()
+    expected_vwap = total_value / total_volume
+    
+    assert abs(svwap - expected_vwap) < 0.01
+```
+
+## 🎯 스캐너 테스트 패턴
+
+```python
+import pytest
+from src.scanner.scanner import CandidateScanner
+
+class TestCandidateScanner:
+    
+    @pytest.fixture
+    def scanner(self, sample_config):
+        return CandidateScanner(sample_config.scanner)
+    
+    def test_score_calculation(self, scanner):
+        """후보 점수 계산 테스트."""
+        features = {
+            'RS': 0.05,           # 5% 상대강도
+            'RVOL': 3.0,          # 3배 거래량 증가
+            'trend': 1,           # 상승 추세
+            'depth_score': 0.8    # 높은 유동성
+        }
+        
+        score = scanner.calculate_score(features)
+        
+        # 0.4×0.05 + 0.3×2.0 + 0.2×1 + 0.1×0.8 = 0.9
+        expected = 0.4 * 0.05 + 0.3 * 2.0 + 0.2 * 1 + 0.1 * 0.8
+        assert abs(score - expected) < 0.001
+    
+    def test_candidate_filtering(self, scanner):
+        """후보 필터링 테스트."""
+        candidates = [
+            {'market': 'KRW-BTC', 'rvol': 3.0, 'spread_bp': 3, 'trend': 1, 'score': 0.9},
+            {'market': 'KRW-ETH', 'rvol': 1.5, 'spread_bp': 4, 'trend': 1, 'score': 0.8},  # RVOL 부족
+            {'market': 'KRW-ADA', 'rvol': 2.5, 'spread_bp': 8, 'trend': 1, 'score': 0.7},  # 스프레드 높음
+            {'market': 'KRW-DOT', 'rvol': 2.2, 'spread_bp': 4, 'trend': 0, 'score': 0.6}   # 추세 없음
+        ]
+        
+        filtered = scanner.filter_candidates(candidates)
+        
+        assert len(filtered) == 1  # BTC만 통과
+        assert filtered[0]['market'] == 'KRW-BTC'
+```
+
+## 📈 신호 생성 테스트 패턴
+
+```python
+import pytest
+from src.signals.orb import ORBSignal
+
+class TestORBSignal:
+    
+    @pytest.fixture
+    def orb_signal(self, sample_config):
+        return ORBSignal(sample_config.signals.orb)
+    
+    def test_orb_breakout_detection(self, orb_signal, sample_candles):
+        """ORB 돌파 감지 테스트."""
+        # 09:00-10:00 박스 설정 (인덱스 0-11, 5분봉 기준)
+        morning_candles = sample_candles.iloc[:12].copy()
+        
+        # 돌파 캔들 추가 (박스 상단 + ATR * 0.1)
+        box_high = morning_candles['high_price'].max()
+        atr = 50.0  # 테스트용 ATR
+        breakout_price = box_high + (atr * 0.1)
+        
+        breakout_candle = {
+            'candle_date_time_kst': pd.Timestamp('2024-01-01 10:05:00'),
+            'high_price': breakout_price,
+            'trade_price': breakout_price,
+            'candle_acc_trade_volume': 2000  # 높은 거래량
+        }
+        
+        signal = orb_signal.check_breakout(morning_candles, breakout_candle, atr)
+        
+        assert signal is not None
+        assert signal['type'] == 'ORB_BREAKOUT'
+        assert signal['entry_price'] == breakout_price
+        assert 'stop_price' in signal
+        assert 'target_price' in signal
+```
+
+## 🛡️ 리스크 관리 테스트 패턴
+
+```python
+import pytest
+from src.risk.guard import RiskGuard
+
+class TestRiskGuard:
+    
+    @pytest.fixture
+    def risk_guard(self, sample_config):
+        return RiskGuard(sample_config.risk)
+    
+    def test_position_size_calculation(self, risk_guard):
+        """포지션 크기 계산 테스트."""
+        account_balance = 1000000  # 100만원
+        entry_price = 50000
+        stop_price = 49000
+        
+        position_size = risk_guard.calculate_position_size(
+            account_balance, entry_price, stop_price
+        )
+        
+        # 위험 한도 0.4% 기준
+        risk_amount = account_balance * 0.004  # 4,000원
+        expected_size = risk_amount / (entry_price - stop_price)  # 4,000 / 1,000 = 4
+        
+        assert position_size == expected_size
+    
+    def test_daily_drawdown_limit(self, risk_guard):
+        """일일 손실 한도 테스트."""
+        account_balance = 1000000
+        realized_pnl = -12000  # -1.2% 손실
+        
+        should_stop = risk_guard.check_daily_drawdown(account_balance, realized_pnl)
+        
+        assert should_stop is True  # -1% 한도 초과
+    
+    def test_consecutive_loss_limit(self, risk_guard):
+        """연속 손실 제한 테스트."""
+        trade_history = [
+            {'symbol': 'KRW-BTC', 'pnl': -1000, 'timestamp': '2024-01-01T10:00:00'},
+            {'symbol': 'KRW-BTC', 'pnl': -1500, 'timestamp': '2024-01-01T11:00:00'}
+        ]
+        
+        should_block = risk_guard.check_consecutive_losses('KRW-BTC', trade_history)
+        
+        assert should_block is True  # 2회 연속 손실로 차단
+```
+
+## 🔌 주문 실행 테스트 패턴
+
+```python
+import pytest
+from unittest.mock import AsyncMock, Mock
+from src.order.executor import OrderExecutor
+
+class TestOrderExecutor:
+    
+    @pytest.fixture
+    def mock_upbit_order_client(self):
+        client = Mock()
+        client.place_order = AsyncMock()
+        client.cancel_order = AsyncMock()
+        client.get_order = AsyncMock()
+        return client
+    
+    @pytest.mark.asyncio
+    async def test_paper_trade_execution(self, mock_upbit_order_client):
+        """페이퍼 트레이딩 주문 실행 테스트."""
+        executor = OrderExecutor(mock_upbit_order_client, paper_mode=True)
+        
+        order_request = {
+            'market': 'KRW-BTC',
+            'side': 'bid',
+            'ord_type': 'limit',
+            'price': 50000,
+            'volume': 0.001
+        }
+        
+        result = await executor.place_order(order_request)
+        
+        # 페이퍼 모드에서는 실제 API 호출 안함
+        mock_upbit_order_client.place_order.assert_not_called()
+        
+        # 모의 체결 결과 확인
+        assert result['uuid'] is not None
+        assert result['state'] == 'done'
+        assert result['executed_volume'] == '0.001'
+    
+    @pytest.mark.asyncio
+    async def test_order_retry_logic(self, mock_upbit_order_client):
+        """주문 재시도 로직 테스트."""
+        # 첫 번째 호출은 실패, 두 번째는 성공
+        mock_upbit_order_client.place_order.side_effect = [
+            Exception("Network error"),
+            {'uuid': 'test-uuid', 'state': 'wait'}
+        ]
+        
+        executor = OrderExecutor(mock_upbit_order_client, paper_mode=False)
+        
+        order_request = {'market': 'KRW-BTC', 'side': 'bid'}
+        result = await executor.place_order(order_request)
+        
+        assert mock_upbit_order_client.place_order.call_count == 2
+        assert result['uuid'] == 'test-uuid'
+```
+
+## 🎪 E2E 테스트 패턴
+
+```python
+import pytest
+from unittest.mock import patch, AsyncMock
+from src.app import TradingApp
+
+class TestTradingAppE2E:
+    
+    @pytest.mark.asyncio
+    async def test_scan_to_report_flow(self, sample_config):
+        """스캔부터 리포트 생성까지 전체 플로우 테스트."""
+        
+        # Mock 전체 외부 의존성
+        with patch('src.api.upbit_rest.UpbitRestClient') as mock_rest, \
+             patch('src.api.upbit_ws.UpbitWebSocketClient') as mock_ws:
+            
+            # API 응답 Mock 설정
+            mock_rest.return_value.get_markets = AsyncMock(return_value=[
+                {'market': 'KRW-BTC', 'korean_name': '비트코인'}
+            ])
+            mock_rest.return_value.get_candles = AsyncMock(return_value=[...])
+            
+            app = TradingApp(sample_config, paper_mode=True)
+            
+            # 전체 실행
+            result = await app.run_scan_and_trade()
+            
+            # 결과 검증
+            assert 'candidates' in result
+            assert 'trades' in result
+            assert 'daily_report' in result
+            
+            # 리포트 파일 생성 확인
+            assert os.path.exists('runtime/reports/daily_report_20240101.json')
+```
+
+## 📋 테스트 실행 및 커버리지
+
+### 1. pytest 설정 (pytest.ini)
+```ini
+[tool:pytest]
+testpaths = tests
+python_files = test_*.py *_test.py
+python_classes = Test*
+python_functions = test_*
+addopts = 
+    --strict-markers
+    --verbose
+    --tb=short
+    --cov=src
+    --cov-report=html
+    --cov-report=term-missing
+    --cov-fail-under=80
+
+markers =
+    unit: Unit tests
+    integration: Integration tests
+    e2e: End-to-end tests
+    slow: Slow running tests
+```
+
+### 2. 테스트 실행 명령어
+```bash
+# 전체 테스트 실행
+pytest
+
+# 단위 테스트만 실행
+pytest -m unit
+
+# 통합 테스트만 실행  
+pytest -m integration
+
+# 커버리지 80% 미만 시 실패
+pytest --cov-fail-under=80
+
+# 병렬 실행 (빠른 테스트)
+pytest -n auto
+```
+
+이 테스트 표준을 준수하여 안정적이고 신뢰할 수 있는 트레이딩 시스템을 구축하세요.

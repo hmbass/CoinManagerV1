@@ -1,0 +1,743 @@
+---
+alwaysApply: true
+---
+
+# 서버 및 데몬 관리 전용 가이드 (Server Management Rules)
+
+이 문서는 **모든 서버 및 데몬 실행 시 반드시 준수해야 하는 핵심 규칙**입니다.
+
+## ⚡ 핵심 원칙: 서버 관리 스크립트 필수 사용
+
+**절대 규칙**: 모든 서버나 데몬을 직접 실행하지 않고, **반드시 `scripts/server-manager.sh` 통합 관리 스크립트를 통해서만 실행**해야 합니다.
+
+## 📋 서버 실행 후 필수 로그 점검 절차
+
+**핵심 원칙**: 서버나 데몬이 실행된 후에는 **반드시 로그를 통해 서비스 점검을 수행**해야 합니다. 단순히 프로세스가 시작되었다고 해서 정상 동작한다고 가정하지 않습니다.
+
+### 🔍 **1단계: 자동 로그 점검 (스크립트 수행)**
+
+서버 관리 스크립트는 서버 시작 후 다음 항목들을 **자동으로 검증**해야 합니다:
+
+```bash
+# 서버 시작 후 자동 점검 함수
+validate_service_startup() {
+    local service_name=$1
+    local log_file=$2
+    local port=$3
+    local health_check_func=$4
+    
+    log_message "INFO" "$service_name 시작 후 자동 점검 수행 중..."
+    
+    # 1. 프로세스 실행 상태 확인
+    sleep 3  # 서버 초기화 대기
+    
+    # 2. 포트 바인딩 확인
+    if ! netstat -an | grep ":$port.*LISTEN" > /dev/null 2>&1; then
+        log_message "ERROR" "$service_name 포트 $port 바인딩 실패"
+        return 1
+    fi
+    
+    # 3. 헬스체크 엔드포인트 확인
+    if ! $health_check_func; then
+        log_message "ERROR" "$service_name 헬스체크 실패"
+        return 1
+    fi
+    
+    # 4. 로그에서 오류 키워드 검색
+    if check_for_critical_errors "$log_file" "$service_name"; then
+        log_message "ERROR" "$service_name 로그에서 치명적 오류 발견"
+        return 1
+    fi
+    
+    # 5. 메모리 사용량 체크 (선택적)
+    check_memory_usage "$service_name"
+    
+    log_message "INFO" "$service_name 자동 점검 완료 ✅"
+    return 0
+}
+
+# 치명적 오류 검사 강화
+check_for_critical_errors() {
+    local logfile=$1
+    local service_name=$2
+    
+    if [ -f "$logfile" ]; then
+        # 최근 30줄에서 치명적 오류 검색
+        local critical_errors=$(tail -n 30 "$logfile" | grep -i "error\|exception\|failed\|traceback\|fatal\|critical" | wc -l)
+        local connection_errors=$(tail -n 30 "$logfile" | grep -i "connection.*failed\|database.*error\|network.*error" | wc -l)
+        
+        if [ "$critical_errors" -gt 0 ]; then
+            log_message "WARN" "$service_name에서 $critical_errors개의 오류 메시지 발견"
+            echo ""
+            log_message "WARN" "최근 오류 내용:"
+            tail -n 30 "$logfile" | grep -i "error\|exception\|failed\|traceback" | tail -n 3
+            echo ""
+            
+            # 연결 오류는 치명적으로 분류
+            if [ "$connection_errors" -gt 0 ]; then
+                return 1  # 치명적 오류
+            fi
+        fi
+    fi
+    return 0  # 정상 또는 경미한 오류
+}
+```
+
+### 📋 **2단계: 수동 로그 점검 (개발자 필수 확인)**
+
+자동 점검 통과 후, 개발자는 다음 항목들을 **반드시 수동으로 확인**해야 합니다:
+
+#### ✅ **필수 확인 체크리스트**
+
+```bash
+# 로그 점검 가이드 표시
+show_manual_check_guide() {
+    local service_name=$1
+    local log_file=$2
+    
+    echo ""
+    log_message "INFO" "📋 $service_name 수동 점검 체크리스트"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "   ✅ 다음 명령으로 로그를 확인하고 각 항목을 검증하세요:"
+    echo "   📄 ./scripts/server-manager.sh logs $service_name"
+    echo ""
+    echo "   🔍 필수 확인 항목:"
+    echo "   1️⃣  애플리케이션 초기화 완료 메시지 확인"
+    echo "   2️⃣  데이터베이스 연결 성공 로그 확인" 
+    echo "   3️⃣  설정 파일 로딩 성공 확인"
+    echo "   4️⃣  외부 API/서비스 연결 상태 확인"
+    echo "   5️⃣  보안 설정 (HTTPS, 인증) 활성화 확인"
+    echo "   6️⃣  메모리/디스크 사용량 정상 범위 확인"
+    echo "   7️⃣  워닝 메시지가 있다면 무시 가능한 수준인지 판단"
+    echo ""
+    echo "   ⚠️  문제 발견 시 즉시 서버를 중단하고 문제를 해결하세요!"
+    echo "   🛑 ./scripts/server-manager.sh stop"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+}
+```
+
+### 🚨 **3단계: 문제 발견 시 필수 조치**
+
+로그 점검에서 문제를 발견한 경우 다음 절차를 **반드시 수행**:
+
+```bash
+handle_startup_failure() {
+    local service_name=$1
+    local log_file=$2
+    
+    log_message "ERROR" "🚨 $service_name 시작 중 문제 발견!"
+    
+    # 1. 즉시 서버 중단
+    log_message "INFO" "서버를 안전하게 중단합니다..."
+    ./scripts/server-manager.sh stop
+    
+    # 2. 오류 상세 분석
+    log_message "INFO" "📊 오류 상세 분석 중..."
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "🔍 최근 로그 (마지막 20줄):"
+    tail -n 20 "$log_file"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    
+    # 3. 해결 방안 제시
+    log_message "INFO" "💡 권장 해결 방안:"
+    echo "   1. 설정 파일 (config) 검토"
+    echo "   2. 의존성 패키지 재설치"
+    echo "   3. 데이터베이스 연결 설정 확인"
+    echo "   4. 포트 충돌 여부 확인"
+    echo "   5. 디스크 공간 및 메모리 확인"
+    echo ""
+    
+    return 1
+}
+```
+
+---
+
+## 🚀 필수 구현 명령어
+
+### 1. start - 모든 서버 시작 (언어 무관) + **필수 로그 점검**
+```bash
+start_all_services() {
+    log_message "INFO" "=== 프로젝트 서버 시작 ==="
+    
+    # 언어별 서비스 시작 (필요한 것만 선택)
+    start_backend      # Java, Python, Node.js, Go, C# 등
+    start_frontend     # React, Vue, Angular 등
+    start_api          # REST API 서버 (별도 구성시)
+    start_websocket    # WebSocket 서버 (필요시)
+    start_database     # 로컬 DB 서버 (필요시)
+    start_worker       # 백그라운드 작업자 (필요시)
+    
+    log_message "INFO" "=== 모든 서비스 시작 완료 ==="
+    
+    # ⚠️ 필수: 서버 시작 후 로그 점검 수행
+    log_message "INFO" "🔍 서버 시작 후 로그 점검 수행 중..."
+    
+    # 각 서비스별 자동 점검
+    validate_all_services
+    
+    # 수동 점검 가이드 표시
+    show_startup_verification_guide
+    
+    show_status
+}
+
+# 모든 서비스 자동 검증
+validate_all_services() {
+    local failed_services=()
+    
+    # 각 실행 중인 서비스 검증
+    if [ -f "$BACKEND_PID_FILE" ]; then
+        if ! validate_service_startup "Backend" "$BACKEND_LOG" "$BACKEND_PORT" "check_backend_health"; then
+            failed_services+=("Backend")
+        fi
+    fi
+    
+    if [ -f "$FRONTEND_PID_FILE" ]; then
+        if ! validate_service_startup "Frontend" "$FRONTEND_LOG" "$FRONTEND_PORT" "check_frontend_health"; then
+            failed_services+=("Frontend")
+        fi
+    fi
+    
+    if [ -f "$API_PID_FILE" ]; then
+        if ! validate_service_startup "API" "$API_LOG" "$API_PORT" "check_api_health"; then
+            failed_services+=("API")
+        fi
+    fi
+    
+    # 실패한 서비스가 있으면 전체 중단
+    if [ ${#failed_services[@]} -gt 0 ]; then
+        log_message "ERROR" "다음 서비스에서 문제 발견: ${failed_services[*]}"
+        log_message "ERROR" "전체 서버를 중단합니다."
+        stop_all_services
+        return 1
+    fi
+    
+    log_message "INFO" "✅ 모든 서비스 자동 점검 완료"
+    return 0
+}
+
+# 시작 검증 가이드 표시
+show_startup_verification_guide() {
+    echo ""
+    log_message "INFO" "🎯 서버 시작 완료! 다음 단계를 수행하세요:"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    echo "   📋 1단계: 각 서비스 로그를 수동으로 점검하세요"
+    echo "   👉 ./scripts/server-manager.sh logs backend"
+    echo "   👉 ./scripts/server-manager.sh logs frontend"
+    echo "   👉 ./scripts/server-manager.sh logs api"
+    echo ""
+    echo "   🔍 2단계: 브라우저에서 서비스 접속 테스트"
+    echo "   🌐 Backend:  http://localhost:$BACKEND_PORT"
+    echo "   🌐 Frontend: http://localhost:$FRONTEND_PORT"
+    echo ""
+    echo "   ⚠️  3단계: 문제 발견 시 즉시 중단하고 로그를 분석하세요"
+    echo "   🛑 ./scripts/server-manager.sh stop"
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+}
+```
+
+### 2. stop - 모든 서버 안전 종료 (언어 무관)
+```bash
+stop_all_services() {
+    log_message "INFO" "=== 프로젝트 서버 종료 ==="
+    
+    # 모든 서비스 순차적 종료 (실행 중인 것만)
+    stop_service_by_pid "$WORKER_PID_FILE" "Worker"           # 백그라운드 작업자 먼저
+    stop_service_by_pid "$WEBSOCKET_PID_FILE" "WebSocket"     # WebSocket 서버
+    stop_service_by_pid "$FRONTEND_PID_FILE" "Frontend"       # 프론트엔드
+    stop_service_by_pid "$BACKEND_PID_FILE" "Backend"         # 백엔드
+    stop_service_by_pid "$API_PID_FILE" "API"                 # API 서버
+    stop_service_by_pid "$DATABASE_PID_FILE" "Database"       # 로컬 DB (마지막)
+    
+    log_message "INFO" "=== 모든 서비스 종료 완료 ==="
+}
+```
+
+### 3. restart - 서버 재시작 (언어 무관)
+```bash
+restart_all_services() {
+    log_message "INFO" "=== 프로젝트 서버 재시작 ==="
+    stop_all_services
+    sleep 3  # 모든 프로세스 완전 종료 대기
+    start_all_services
+}
+```
+
+### 4. status - 서버 상태 확인 (언어 무관)
+```bash
+show_status() {
+    echo ""
+    log_message "INFO" "=== 프로젝트 서버 상태 ==="
+    
+    # 모든 서비스 상태 확인 (존재하는 것만)
+    check_service_status "$BACKEND_PID_FILE" "Backend" "$BACKEND_PORT"
+    check_service_status "$FRONTEND_PID_FILE" "Frontend" "$FRONTEND_PORT"
+    check_service_status "$API_PID_FILE" "API" "$API_PORT"
+    check_service_status "$WEBSOCKET_PID_FILE" "WebSocket" "$WEBSOCKET_PORT"
+    check_service_status "$DATABASE_PID_FILE" "Database" "$DATABASE_PORT"
+    check_service_status "$WORKER_PID_FILE" "Worker" "N/A"
+    
+    echo ""
+    log_message "INFO" "서비스 URL:"
+    echo "  Backend:   http://localhost:$BACKEND_PORT"
+    echo "  Frontend:  http://localhost:$FRONTEND_PORT"
+    echo "  API:       http://localhost:$API_PORT"
+    echo "  WebSocket: ws://localhost:$WEBSOCKET_PORT"
+    echo ""
+}
+```
+
+### 5. logs - 실시간 로그 모니터링 (언어 무관)
+```bash
+show_logs() {
+    local service=$1
+    
+    case $service in
+        "backend"|"be")
+            log_message "INFO" "Backend 로그 모니터링 시작 (Ctrl+C로 종료)"
+            tail -f "$BACKEND_LOG"
+            ;;
+        "frontend"|"fe")
+            log_message "INFO" "Frontend 로그 모니터링 시작 (Ctrl+C로 종료)"
+            tail -f "$FRONTEND_LOG"
+            ;;
+        "api")
+            log_message "INFO" "API 로그 모니터링 시작 (Ctrl+C로 종료)"
+            tail -f "$API_LOG"
+            ;;
+        "websocket"|"ws")
+            log_message "INFO" "WebSocket 로그 모니터링 시작 (Ctrl+C로 종료)"
+            tail -f "$WEBSOCKET_LOG"
+            ;;
+        "database"|"db")
+            log_message "INFO" "Database 로그 모니터링 시작 (Ctrl+C로 종료)"
+            tail -f "$DATABASE_LOG"
+            ;;
+        "worker")
+            log_message "INFO" "Worker 로그 모니터링 시작 (Ctrl+C로 종료)"
+            tail -f "$WORKER_LOG"
+            ;;
+        "error"|"err")
+            log_message "INFO" "오류 로그 모니터링 시작 (Ctrl+C로 종료)"
+            tail -f "$ERROR_LOG"
+            ;;
+        "all"|"")
+            log_message "INFO" "전체 시스템 로그 모니터링 시작 (Ctrl+C로 종료)"
+            tail -f "$SYSTEM_LOG"
+            ;;
+        *)
+            log_message "ERROR" "지원되지 않는 로그 타입: $service"
+            echo "사용법: $0 logs [backend|frontend|api|websocket|database|worker|error|all]"
+            ;;
+    esac
+}
+```
+
+---
+
+## 🔍 헬스체크 및 오류 감지
+
+### 1. 헬스체크 함수 (모든 언어/프레임워크 지원)
+```bash
+# 백엔드 헬스체크 (Java, Python, Node.js, Go, C# 등)
+check_backend_health() {
+    # 공통 헬스체크 엔드포인트 시도
+    curl -s http://localhost:$BACKEND_PORT/health > /dev/null 2>&1 || \
+    curl -s http://localhost:$BACKEND_PORT/actuator/health > /dev/null 2>&1 || \
+    curl -s http://localhost:$BACKEND_PORT/api/health > /dev/null 2>&1 || \
+    curl -s http://localhost:$BACKEND_PORT/ > /dev/null 2>&1
+    return $?
+}
+
+# 프론트엔드 헬스체크 (React, Vue, Angular 등)
+check_frontend_health() {
+    curl -s http://localhost:$FRONTEND_PORT > /dev/null 2>&1
+    return $?
+}
+
+# API 서버 헬스체크 (별도 API 서버시)
+check_api_health() {
+    curl -s http://localhost:$API_PORT/health > /dev/null 2>&1 || \
+    curl -s http://localhost:$API_PORT/api/health > /dev/null 2>&1 || \
+    curl -s http://localhost:$API_PORT/ > /dev/null 2>&1
+    return $?
+}
+
+# WebSocket 헬스체크 (Socket.io, WebSocket 등)
+check_websocket_health() {
+    netstat -an | grep ":$WEBSOCKET_PORT.*LISTEN" > /dev/null 2>&1 || \
+    ss -an | grep ":$WEBSOCKET_PORT.*LISTEN" > /dev/null 2>&1
+    return $?
+}
+
+# 데이터베이스 헬스체크 (로컬 DB 서버시)
+check_database_health() {
+    netstat -an | grep ":$DATABASE_PORT.*LISTEN" > /dev/null 2>&1 || \
+    ss -an | grep ":$DATABASE_PORT.*LISTEN" > /dev/null 2>&1
+    return $?
+}
+
+# 백그라운드 워커 헬스체크 (PID 기반)
+check_worker_health() {
+    if [ -f "$WORKER_PID_FILE" ]; then
+        local pid=$(cat "$WORKER_PID_FILE" 2>/dev/null)
+        kill -0 "$pid" 2>/dev/null
+        return $?
+    fi
+    return 1
+}
+```
+
+### 2. 자동 오류 감지
+```bash
+check_for_errors() {
+    local logfile=$1
+    local service_name=$2
+    
+    if [ -f "$logfile" ]; then
+        local error_count=$(tail -n 50 "$logfile" | grep -i "error\|exception\|failed\|traceback" | wc -l)
+        if [ "$error_count" -gt 0 ]; then
+            log_message "ERROR" "$service_name에서 $error_count개의 오류 발견"
+            echo ""
+            log_message "WARN" "최근 오류 내용:"
+            tail -n 50 "$logfile" | grep -i "error\|exception\|failed\|traceback" | tail -n 5
+            echo ""
+            return 1
+        fi
+    fi
+    return 0
+}
+```
+
+---
+
+## 📋 사용법 및 명령어 예시
+
+### 기본 사용법
+```bash
+# 도움말 보기
+./scripts/server-manager.sh help
+
+# 모든 서버 시작
+./scripts/server-manager.sh start
+
+# 서버 상태 확인
+./scripts/server-manager.sh status
+
+# 특정 서비스 로그 확인
+./scripts/server-manager.sh logs backend
+./scripts/server-manager.sh logs frontend
+
+# 서버 재시작
+./scripts/server-manager.sh restart
+
+# 서버 종료
+./scripts/server-manager.sh stop
+```
+
+### 개별 서비스 관리 (언어 무관)
+```bash
+# 개별 서비스 시작
+./scripts/server-manager.sh start-backend     # Java, Python, Node.js, Go, C# 등
+./scripts/server-manager.sh start-frontend    # React, Vue, Angular 등
+./scripts/server-manager.sh start-api         # REST API 서버
+./scripts/server-manager.sh start-websocket   # WebSocket 서버
+./scripts/server-manager.sh start-database    # 로컬 DB 서버
+./scripts/server-manager.sh start-worker      # 백그라운드 작업자
+
+# 개별 서비스 재시작
+./scripts/server-manager.sh restart-backend
+./scripts/server-manager.sh restart-frontend
+./scripts/server-manager.sh restart-api
+
+# 개별 서비스 종료
+./scripts/server-manager.sh stop-backend
+./scripts/server-manager.sh stop-websocket
+./scripts/server-manager.sh stop-worker
+```
+
+---
+
+## ⚠️ 중요 주의사항
+
+### 1. 포트 번호 고정 유지
+- **절대 변경 금지**: 한 번 정의된 포트 번호는 프로젝트 전체에서 고정
+- **문서화 필수**: `README.md`에 사용 중인 모든 포트 번호 명시
+- **충돌 해결**: 기존 프로세스 자동 종료 후 새 서버 시작
+
+### 2. 로그 파일 관리
+- **자동 로테이션**: 로그 파일이 너무 커지지 않도록 관리
+- **오류 추적**: 모든 오류는 별도 `errors.log`에 기록
+- **실시간 모니터링**: `tail -f` 명령으로 실시간 추적 가능
+
+### 3. 프로세스 추적
+- **PID 파일**: 모든 서비스의 프로세스 ID를 파일로 관리
+- **우아한 종료**: SIGTERM → SIGKILL 순서로 안전한 종료
+- **재시작 안전성**: 이전 프로세스 완전 종료 후 새 프로세스 시작
+
+---
+
+## 🎯 언어별 프로젝트 커스터마이징 가이드
+
+### 1. Python 프로젝트 예시
+```bash
+# Python FastAPI/Flask/Django 서버
+start_backend() {
+    log_message "INFO" "Python Backend 시작 중..."
+    kill_process_by_port $BACKEND_PORT "Backend"
+    
+    # 가상환경 활성화 (있는 경우)
+    if [ -d ".venv" ]; then
+        source .venv/bin/activate
+    fi
+    
+    # FastAPI
+    nohup uvicorn src.main:app --host 0.0.0.0 --port $BACKEND_PORT --reload > "$BACKEND_LOG" 2>&1 &
+    # Flask
+    # nohup python -m flask run --host 0.0.0.0 --port $BACKEND_PORT > "$BACKEND_LOG" 2>&1 &
+    # Django
+    # nohup python manage.py runserver 0.0.0.0:$BACKEND_PORT > "$BACKEND_LOG" 2>&1 &
+    
+    echo $! > "$BACKEND_PID_FILE"
+    sleep 3
+    validate_service_start "Backend" check_backend_health "$BACKEND_LOG"
+}
+```
+
+### 2. Java Spring Boot 프로젝트 예시
+```bash
+# Java Spring Boot 서버
+start_backend() {
+    log_message "INFO" "Java Spring Boot Backend 시작 중..."
+    kill_process_by_port $BACKEND_PORT "Backend"
+    
+    # Maven
+    nohup mvn spring-boot:run -Dspring-boot.run.arguments="--server.port=$BACKEND_PORT" > "$BACKEND_LOG" 2>&1 &
+    # Gradle
+    # nohup gradle bootRun --args="--server.port=$BACKEND_PORT" > "$BACKEND_LOG" 2>&1 &
+    # JAR 실행
+    # nohup java -jar target/app.jar --server.port=$BACKEND_PORT > "$BACKEND_LOG" 2>&1 &
+    
+    echo $! > "$BACKEND_PID_FILE"
+    sleep 5
+    validate_service_start "Backend" check_backend_health "$BACKEND_LOG"
+}
+```
+
+### 3. Node.js 프로젝트 예시
+```bash
+# Node.js Express/NestJS 서버
+start_backend() {
+    log_message "INFO" "Node.js Backend 시작 중..."
+    kill_process_by_port $BACKEND_PORT "Backend"
+    
+    # Express/NestJS
+    nohup npm start > "$BACKEND_LOG" 2>&1 &
+    # 개발 모드
+    # nohup npm run dev > "$BACKEND_LOG" 2>&1 &
+    # 직접 실행
+    # nohup node server.js > "$BACKEND_LOG" 2>&1 &
+    
+    echo $! > "$BACKEND_PID_FILE"
+    sleep 3
+    validate_service_start "Backend" check_backend_health "$BACKEND_LOG"
+}
+
+# React/Vue/Angular 프론트엔드
+start_frontend() {
+    log_message "INFO" "Node.js Frontend 시작 중..."
+    kill_process_by_port $FRONTEND_PORT "Frontend"
+    
+    # React (Create React App)
+    nohup npm start > "$FRONTEND_LOG" 2>&1 &
+    # Vue.js
+    # nohup npm run serve > "$FRONTEND_LOG" 2>&1 &
+    # Angular
+    # nohup ng serve --port $FRONTEND_PORT > "$FRONTEND_LOG" 2>&1 &
+    # Vite
+    # nohup npm run dev -- --port $FRONTEND_PORT > "$FRONTEND_LOG" 2>&1 &
+    
+    echo $! > "$FRONTEND_PID_FILE"
+    sleep 5
+    validate_service_start "Frontend" check_frontend_health "$FRONTEND_LOG"
+}
+```
+
+### 4. Go 프로젝트 예시
+```bash
+# Go 서버
+start_backend() {
+    log_message "INFO" "Go Backend 시작 중..."
+    kill_process_by_port $BACKEND_PORT "Backend"
+    
+    # Go 빌드 및 실행
+    go build -o app main.go
+    nohup ./app --port=$BACKEND_PORT > "$BACKEND_LOG" 2>&1 &
+    # 직접 실행
+    # nohup go run main.go --port=$BACKEND_PORT > "$BACKEND_LOG" 2>&1 &
+    
+    echo $! > "$BACKEND_PID_FILE"
+    sleep 3
+    validate_service_start "Backend" check_backend_health "$BACKEND_LOG"
+}
+```
+
+### 5. C#/.NET 프로젝트 예시
+```bash
+# .NET 서버
+start_backend() {
+    log_message "INFO" ".NET Backend 시작 중..."
+    kill_process_by_port $BACKEND_PORT "Backend"
+    
+    # .NET 실행
+    nohup dotnet run --urls "http://localhost:$BACKEND_PORT" > "$BACKEND_LOG" 2>&1 &
+    # 빌드된 DLL 실행
+    # nohup dotnet MyApp.dll --urls "http://localhost:$BACKEND_PORT" > "$BACKEND_LOG" 2>&1 &
+    
+    echo $! > "$BACKEND_PID_FILE"
+    sleep 3
+    validate_service_start "Backend" check_backend_health "$BACKEND_LOG"
+}
+```
+
+### 6. Ruby 프로젝트 예시
+```bash
+# Ruby on Rails 서버
+start_backend() {
+    log_message "INFO" "Ruby Backend 시작 중..."
+    kill_process_by_port $BACKEND_PORT "Backend"
+    
+    # Rails 서버
+    nohup bundle exec rails server -p $BACKEND_PORT > "$BACKEND_LOG" 2>&1 &
+    # Sinatra 등
+    # nohup ruby app.rb -p $BACKEND_PORT > "$BACKEND_LOG" 2>&1 &
+    
+    echo $! > "$BACKEND_PID_FILE"
+    sleep 3
+    validate_service_start "Backend" check_backend_health "$BACKEND_LOG"
+}
+```
+
+### 7. PHP 프로젝트 예시
+```bash
+# PHP 서버
+start_backend() {
+    log_message "INFO" "PHP Backend 시작 중..."
+    kill_process_by_port $BACKEND_PORT "Backend"
+    
+    # PHP 내장 서버
+    nohup php -S localhost:$BACKEND_PORT > "$BACKEND_LOG" 2>&1 &
+    # Laravel Artisan
+    # nohup php artisan serve --port=$BACKEND_PORT > "$BACKEND_LOG" 2>&1 &
+    
+    echo $! > "$BACKEND_PID_FILE"
+    sleep 3
+    validate_service_start "Backend" check_backend_health "$BACKEND_LOG"
+}
+```
+
+### 8. 공통 서비스 시작 검증 함수
+```bash
+# 서비스 시작 검증 (모든 언어 공통)
+validate_service_start() {
+    local service_name=$1
+    local health_check_func=$2
+    local log_file=$3
+    
+    if $health_check_func; then
+        log_message "INFO" "$service_name 정상 시작 완료 (포트: ${!service_name}_PORT)"
+    else
+        log_message "ERROR" "$service_name 시작 실패"
+        check_for_errors "$log_file" "$service_name"
+        return 1
+    fi
+}
+```
+
+### 9. 프로젝트별 커스터마이징 체크리스트
+- ✅ **포트 번호**: 프로젝트에 맞는 고유 포트 설정
+- ✅ **실행 명령어**: 언어/프레임워크별 정확한 실행 명령
+- ✅ **헬스체크**: 프로젝트별 헬스체크 엔드포인트 설정
+- ✅ **로그 경로**: 프로젝트 구조에 맞는 로그 파일 경로
+- ✅ **환경 변수**: 필요한 환경 변수 설정 (DB_URL, API_KEY 등)
+- ✅ **빌드 프로세스**: 컴파일이 필요한 언어의 빌드 단계 포함
+
+---
+
+## 🔄 Cursor AI 준수 사항
+
+Cursor AI는 서버 관련 작업 시 다음을 **반드시** 준수해야 합니다:
+
+1. **스크립트 우선 사용**: 서버 실행이 필요한 모든 상황에서 `scripts/server-manager.sh` 사용
+2. **직접 실행 금지**: 개별 서버 명령어를 직접 실행하지 않음
+3. **포트 고정 유지**: 한 번 설정된 포트 번호는 절대 변경하지 않음
+4. **🔍 로그 점검 강제 수행**: 서버 시작 후 **반드시 로그를 통해 서비스 점검을 수행**하고 정상 동작 확인
+5. **⚠️ 문제 발견 시 즉시 중단**: 로그에서 오류나 문제 발견 시 즉시 서버 중단 및 사용자 보고
+6. **📋 수동 점검 가이드 제공**: 자동 점검 후 개발자가 수행해야 할 수동 점검 가이드 표시
+7. **🚨 정상 동작 확인 후 진행**: 모든 서비스가 정상적으로 동작하는 것을 확인한 후에만 다음 작업 진행
+
+### 예시 워크플로우 (로그 점검 필수 포함)
+```bash
+# 1. 서버 시작 (자동 로그 점검 포함)
+./scripts/server-manager.sh start
+
+# 2. 🔍 필수: 각 서비스 로그 수동 점검
+./scripts/server-manager.sh logs backend   # 백엔드 로그 확인
+./scripts/server-manager.sh logs frontend  # 프론트엔드 로그 확인
+./scripts/server-manager.sh logs api       # API 로그 확인 (있는 경우)
+
+# 3. 🌐 브라우저 접속 테스트
+# http://localhost:8000 (Backend)
+# http://localhost:3000 (Frontend)
+
+# 4. ✅ 정상 동작 확인 후 상태 체크
+./scripts/server-manager.sh status
+
+# 5. 🚨 문제 발견 시 즉시 중단
+./scripts/server-manager.sh stop           # 문제 있을 때
+
+# 6. 🔄 문제 해결 후 재시작
+./scripts/server-manager.sh restart        # 문제 해결 후
+```
+
+### 🚨 필수 점검 프로세스
+```bash
+# 서버 시작 후 반드시 수행해야 하는 단계들:
+
+1️⃣ 자동 점검 (스크립트가 수행)
+   ✅ 프로세스 실행 상태
+   ✅ 포트 바인딩 확인  
+   ✅ 헬스체크 엔드포인트
+   ✅ 로그에서 치명적 오류 검색
+
+2️⃣ 수동 점검 (개발자가 수행)
+   📋 애플리케이션 초기화 메시지
+   📋 데이터베이스 연결 성공
+   📋 설정 파일 로딩 완료
+   📋 외부 API 연결 상태
+   📋 보안 설정 활성화
+
+3️⃣ 브라우저 테스트
+   🌐 각 서비스 URL 접속 확인
+   🌐 기본 기능 동작 테스트
+
+4️⃣ 문제 발견 시 조치
+   🛑 즉시 서버 중단
+   🔍 로그 상세 분석
+   💡 문제 해결 후 재시작
+```
+
+---
+
+**이 규칙을 통해 모든 서버 관리가 체계적이고 안전하게 수행됩니다!** 🚀
+description:
+globs:
+alwaysApply: false
+---

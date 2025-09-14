@@ -1,0 +1,239 @@
+#!/bin/bash
+# Upbit Trading System - Server Management Script
+# Based on server.mdc compliance requirements
+
+set -e
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Configuration
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VENV_PATH="$PROJECT_ROOT/.venv"
+LOG_DIR="$PROJECT_ROOT/runtime/logs"
+TRADING_LOG="$LOG_DIR/trading.log"
+ERROR_LOG="$LOG_DIR/error.log"
+
+# Ensure log directory exists
+mkdir -p "$LOG_DIR"
+
+log_message() {
+    local level=$1
+    local message=$2
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    
+    case $level in
+        "INFO")
+            echo -e "${GREEN}[INFO]${NC} $timestamp - $message"
+            ;;
+        "WARN")
+            echo -e "${YELLOW}[WARN]${NC} $timestamp - $message"
+            ;;
+        "ERROR")
+            echo -e "${RED}[ERROR]${NC} $timestamp - $message"
+            ;;
+        *)
+            echo "$timestamp - $message"
+            ;;
+    esac
+}
+
+check_python_env() {
+    if [ ! -d "$VENV_PATH" ]; then
+        log_message "ERROR" "Virtual environment not found at $VENV_PATH"
+        log_message "INFO" "Run 'make setup' to initialize the environment"
+        exit 1
+    fi
+    
+    if [ ! -f "$PROJECT_ROOT/.env" ]; then
+        log_message "WARN" ".env file not found. Copy env.example to .env and configure API keys"
+    fi
+}
+
+activate_venv() {
+    source "$VENV_PATH/bin/activate"
+}
+
+start_scanner() {
+    log_message "INFO" "🔍 Starting market scanner..."
+    
+    check_python_env
+    activate_venv
+    
+    cd "$PROJECT_ROOT"
+    
+    # Run scanner in background
+    nohup python -m src.app scan > "$TRADING_LOG" 2>&1 &
+    echo $! > "$LOG_DIR/scanner.pid"
+    
+    log_message "INFO" "Market scanner started (PID: $(cat $LOG_DIR/scanner.pid))"
+}
+
+stop_scanner() {
+    if [ -f "$LOG_DIR/scanner.pid" ]; then
+        local pid=$(cat "$LOG_DIR/scanner.pid")
+        if kill -0 $pid 2>/dev/null; then
+            kill $pid
+            log_message "INFO" "Scanner stopped (PID: $pid)"
+        fi
+        rm -f "$LOG_DIR/scanner.pid"
+    else
+        log_message "WARN" "Scanner PID file not found"
+    fi
+}
+
+run_health_check() {
+    log_message "INFO" "🏥 Running health check..."
+    
+    check_python_env
+    activate_venv
+    
+    cd "$PROJECT_ROOT"
+    python -m src.app health
+}
+
+show_status() {
+    log_message "INFO" "📊 System Status"
+    
+    # Check if scanner is running
+    if [ -f "$LOG_DIR/scanner.pid" ]; then
+        local pid=$(cat "$LOG_DIR/scanner.pid")
+        if kill -0 $pid 2>/dev/null; then
+            log_message "INFO" "Scanner: Running (PID: $pid)"
+        else
+            log_message "WARN" "Scanner: Stopped (stale PID file)"
+            rm -f "$LOG_DIR/scanner.pid"
+        fi
+    else
+        log_message "INFO" "Scanner: Not running"
+    fi
+    
+    # Check configuration
+    if [ -f "$PROJECT_ROOT/.env" ]; then
+        log_message "INFO" "Configuration: ✅ .env file present"
+    else
+        log_message "WARN" "Configuration: ❌ .env file missing"
+    fi
+    
+    # Check logs
+    if [ -f "$TRADING_LOG" ]; then
+        local log_size=$(du -h "$TRADING_LOG" | cut -f1)
+        log_message "INFO" "Trading log: $log_size"
+    fi
+}
+
+show_logs() {
+    local log_type=${1:-"trading"}
+    
+    case $log_type in
+        "trading"|"main")
+            if [ -f "$TRADING_LOG" ]; then
+                log_message "INFO" "📄 Showing trading logs (Ctrl+C to exit)"
+                tail -f "$TRADING_LOG"
+            else
+                log_message "WARN" "Trading log file not found: $TRADING_LOG"
+            fi
+            ;;
+        "error"|"err")
+            if [ -f "$ERROR_LOG" ]; then
+                log_message "INFO" "📄 Showing error logs (Ctrl+C to exit)"
+                tail -f "$ERROR_LOG"
+            else
+                log_message "WARN" "Error log file not found: $ERROR_LOG"
+            fi
+            ;;
+        "all")
+            log_message "INFO" "📄 Showing all logs (Ctrl+C to exit)"
+            tail -f "$LOG_DIR"/*.log
+            ;;
+        *)
+            log_message "ERROR" "Unknown log type: $log_type"
+            echo "Usage: $0 logs [trading|error|all]"
+            exit 1
+            ;;
+    esac
+}
+
+backup_data() {
+    log_message "INFO" "💾 Creating backup..."
+    
+    local backup_dir="$PROJECT_ROOT/backups"
+    local timestamp=$(date '+%Y%m%d_%H%M%S')
+    local backup_file="trading_backup_$timestamp.tar.gz"
+    
+    mkdir -p "$backup_dir"
+    
+    # Backup runtime data and configs
+    cd "$PROJECT_ROOT"
+    tar -czf "$backup_dir/$backup_file" \
+        runtime/ \
+        configs/ \
+        .env 2>/dev/null || tar -czf "$backup_dir/$backup_file" runtime/ configs/
+    
+    log_message "INFO" "Backup created: $backup_dir/$backup_file"
+    
+    # Clean old backups (keep last 7 days)
+    find "$backup_dir" -name "trading_backup_*.tar.gz" -mtime +7 -delete
+}
+
+show_help() {
+    echo "Upbit Trading System - Server Manager"
+    echo ""
+    echo "Usage: $0 <command> [options]"
+    echo ""
+    echo "Commands:"
+    echo "  start           Start the trading system scanner"
+    echo "  stop            Stop all running services"
+    echo "  restart         Restart all services"
+    echo "  status          Show system status"
+    echo "  health          Run health check"
+    echo "  logs [type]     Show logs (trading|error|all)"
+    echo "  backup          Create data backup"
+    echo "  help            Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  $0 start        # Start scanner"
+    echo "  $0 logs trading # View trading logs"
+    echo "  $0 health       # Test API connectivity"
+    echo ""
+}
+
+# Main command dispatcher
+case "${1:-}" in
+    "start")
+        start_scanner
+        ;;
+    "stop")
+        stop_scanner
+        ;;
+    "restart")
+        stop_scanner
+        sleep 2
+        start_scanner
+        ;;
+    "status")
+        show_status
+        ;;
+    "health")
+        run_health_check
+        ;;
+    "logs")
+        show_logs "$2"
+        ;;
+    "backup")
+        backup_data
+        ;;
+    "help"|"--help"|"-h")
+        show_help
+        ;;
+    *)
+        echo "Error: Unknown command '$1'"
+        echo ""
+        show_help
+        exit 1
+        ;;
+esac

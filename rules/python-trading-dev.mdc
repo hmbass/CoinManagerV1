@@ -1,0 +1,324 @@
+---
+globs: *.py,pyproject.toml,Makefile
+description: Python trading system development standards
+---
+
+# Python 트레이딩 시스템 개발 표준
+
+## 🐍 Python 코딩 표준
+
+### 1. 타입 힌트 필수
+```python
+from typing import Dict, List, Optional, Tuple, Union
+from datetime import datetime
+import pandas as pd
+
+def calculate_rvol(
+    volumes: pd.Series, 
+    window: int = 20
+) -> float:
+    """RVOL 계산 함수."""
+    if len(volumes) < window + 1:
+        return 1.0
+    
+    recent_vol = volumes.iloc[-1]
+    avg_vol = volumes.iloc[-(window+1):-1].mean()
+    
+    return recent_vol / avg_vol if avg_vol > 0 else 1.0
+```
+
+### 2. Pydantic 설정 모델
+```python
+from pydantic import BaseModel, Field
+from typing import List
+
+class ExchangeConfig(BaseModel):
+    base_url: str = Field(..., description="API base URL")
+    websocket_url: str = Field(..., description="WebSocket URL")
+    timeout: int = Field(default=30, ge=1, le=300)
+
+class ScannerConfig(BaseModel):
+    rvol_threshold: float = Field(default=2.0, ge=1.0)
+    spread_bp_max: int = Field(default=5, ge=1)
+    candle_count: int = Field(default=200, ge=100)
+```
+
+### 3. 예외 처리 표준
+```python
+class TradingSystemError(Exception):
+    """트레이딩 시스템 기본 예외."""
+    pass
+
+class APIError(TradingSystemError):
+    """API 호출 관련 예외."""
+    pass
+
+class DataValidationError(TradingSystemError):
+    """데이터 검증 예외."""
+    pass
+
+# 사용 예시
+try:
+    response = await upbit_client.get_markets()
+except httpx.TimeoutException:
+    raise APIError("API 타임아웃") from None
+except httpx.HTTPStatusError as e:
+    raise APIError(f"API 오류: {e.response.status_code}") from None
+```
+
+### 4. 로깅 표준
+```python
+import logging
+import json
+from datetime import datetime
+
+class JSONFormatter(logging.Formatter):
+    def format(self, record):
+        log_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "level": record.levelname,
+            "module": record.name,
+            "message": record.getMessage(),
+        }
+        
+        if hasattr(record, 'data'):
+            log_entry["data"] = record.data
+            
+        return json.dumps(log_entry, ensure_ascii=False)
+
+# 사용법
+logger = logging.getLogger("trading.scanner")
+logger.info("스캔 완료", extra={"data": {"candidates": 3}})
+```
+
+## 📊 데이터 처리 표준
+
+### 1. Pandas 사용 패턴
+```python
+def process_candles(candles: List[Dict]) -> pd.DataFrame:
+    """캔들 데이터를 DataFrame으로 변환."""
+    df = pd.DataFrame(candles)
+    
+    # 타임스탬프 변환
+    df['candle_date_time_kst'] = pd.to_datetime(df['candle_date_time_kst'])
+    
+    # 수치 변환
+    numeric_cols = ['opening_price', 'high_price', 'low_price', 'trade_price', 'candle_acc_trade_volume']
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col])
+    
+    # 시간순 정렬
+    df = df.sort_values('candle_date_time_kst').reset_index(drop=True)
+    
+    return df
+```
+
+### 2. 비동기 처리 패턴
+```python
+import asyncio
+import httpx
+from typing import List
+
+class UpbitRestClient:
+    def __init__(self, base_url: str, timeout: int = 30):
+        self.base_url = base_url
+        self.timeout = timeout
+        self.client = httpx.AsyncClient(timeout=timeout)
+    
+    async def get_multiple_candles(
+        self, 
+        markets: List[str], 
+        unit: int = 5, 
+        count: int = 200
+    ) -> Dict[str, pd.DataFrame]:
+        """여러 마켓의 캔들 데이터를 병렬로 조회."""
+        tasks = [
+            self.get_candles(market, unit, count) 
+            for market in markets
+        ]
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        return {
+            market: result 
+            for market, result in zip(markets, results)
+            if not isinstance(result, Exception)
+        }
+```
+
+## 🧪 테스트 작성 표준
+
+### 1. Unit Test 패턴
+```python
+import pytest
+import pandas as pd
+from unittest.mock import Mock, patch
+from src.data.features import FeatureCalculator
+
+class TestFeatureCalculator:
+    
+    @pytest.fixture
+    def sample_candles(self):
+        """테스트용 캔들 데이터."""
+        return pd.DataFrame({
+            'candle_date_time_kst': pd.date_range('2024-01-01', periods=100, freq='5T'),
+            'trade_price': range(10000, 10100),
+            'candle_acc_trade_volume': range(1000, 1100)
+        })
+    
+    def test_rvol_calculation(self, sample_candles):
+        """RVOL 계산 테스트."""
+        calc = FeatureCalculator()
+        rvol = calc.calculate_rvol(sample_candles['candle_acc_trade_volume'])
+        
+        assert isinstance(rvol, float)
+        assert rvol > 0
+```
+
+### 2. Mock 사용 패턴
+```python
+@pytest.mark.asyncio
+async def test_upbit_api_error_handling():
+    """API 오류 처리 테스트."""
+    with patch('httpx.AsyncClient.get') as mock_get:
+        # 타임아웃 시뮬레이션
+        mock_get.side_effect = httpx.TimeoutException("Timeout")
+        
+        client = UpbitRestClient("https://api.upbit.com")
+        
+        with pytest.raises(APIError, match="API 타임아웃"):
+            await client.get_markets()
+```
+
+## 🔧 개발 도구 설정
+
+### 1. pyproject.toml 표준
+```toml
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "upbit-trading-system"
+version = "0.1.0"
+description = "Upbit day-trade automation system"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.24.0",
+    "websockets>=11.0",
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "pyjwt>=2.8.0",
+    "pydantic>=2.0.0",
+    "pyyaml>=6.0",
+    "uvloop>=0.17.0",
+    "python-dotenv>=1.0.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "flake8>=6.0.0",
+    "mypy>=1.5.0"
+]
+
+[tool.black]
+line-length = 88
+target-version = ['py311']
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+```
+
+### 2. Makefile 표준
+```make
+.PHONY: install lint test run-paper run-live docker-build
+
+install:
+	pip install -e .[dev]
+
+lint:
+	black src tests
+	isort src tests  
+	flake8 src tests
+	mypy src
+
+test:
+	pytest tests/ -v --cov=src --cov-report=html
+
+run-paper:
+	python -m src.app run --paper
+
+run-live:
+	@echo "⚠️  실거래 모드입니다. 정말 실행하시겠습니까? [y/N]" 
+	@read -r response; \
+	if [ "$$response" = "y" ] || [ "$$response" = "Y" ]; then \
+		python -m src.app run --live; \
+	else \
+		echo "실거래 실행이 취소되었습니다."; \
+	fi
+
+docker-build:
+	docker build -t upbit-trading .
+
+clean:
+	rm -rf __pycache__ .pytest_cache .coverage htmlcov
+	find . -name "*.pyc" -delete
+```
+
+## 📈 퍼포먼스 최적화
+
+### 1. NumPy 벡터화 사용
+```python
+import numpy as np
+
+def calculate_features_vectorized(df: pd.DataFrame) -> pd.DataFrame:
+    """벡터화된 피처 계산."""
+    # EMA 계산 (pandas 내장 사용)
+    df['ema_20'] = df['trade_price'].ewm(span=20).mean()
+    df['ema_50'] = df['trade_price'].ewm(span=50).mean()
+    
+    # ATR 계산
+    high_low = df['high_price'] - df['low_price']
+    high_close = (df['high_price'] - df['trade_price'].shift(1)).abs()
+    low_close = (df['low_price'] - df['trade_price'].shift(1)).abs()
+    
+    true_range = np.maximum(high_low, np.maximum(high_close, low_close))
+    df['atr_14'] = true_range.rolling(window=14).mean()
+    
+    return df
+```
+
+### 2. 메모리 효율적 데이터 구조
+```python
+def optimize_dataframe_memory(df: pd.DataFrame) -> pd.DataFrame:
+    """DataFrame 메모리 사용량 최적화."""
+    for col in df.columns:
+        if df[col].dtype == 'float64':
+            df[col] = df[col].astype('float32')
+        elif df[col].dtype == 'int64':
+            df[col] = df[col].astype('int32')
+    
+    return df
+```
+
+## 🚦 개발 시 주의사항
+
+1. **API 호출 제한**: 업비트 API 레이트 리밋 준수
+2. **메모리 관리**: 대용량 데이터 처리 시 청크 단위 처리
+3. **시간대 처리**: Asia/Seoul 타임존 일관성 유지
+4. **에러 복구**: 네트워크 오류 시 자동 재시도 구현
+5. **보안**: API 키 등 민감정보 로그 출력 금지
+
+이 표준들을 준수하여 안정적이고 성능 좋은 트레이딩 시스템을 개발하세요.

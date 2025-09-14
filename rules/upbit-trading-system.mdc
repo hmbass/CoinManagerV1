@@ -1,0 +1,221 @@
+---
+alwaysApply: true
+description: Upbit day-trade automator development rules based on requirement.md
+---
+
+# 업비트 단타 자동매매 시스템 개발 규칙
+
+## 📋 SSOT (Single Source of Truth)
+
+**절대 규칙**: [requirement.md](mdc:Requirement/requirement.md)를 모든 개발의 기준으로 삼습니다.
+- 모든 기능 구현은 requirement.md 명세를 정확히 따릅니다
+- 파라미터, 알고리즘, 데이터 모델은 requirement.md와 일치시킵니다
+- 변경이 필요한 경우 requirement.md를 먼저 업데이트합니다
+
+## 🏗️ 프로젝트 구조 (Requirement.md 13장 준수)
+
+```
+.
+├── src/
+│   ├── api/           # REST/WS 클라이언트 (upbit_rest.py, upbit_ws.py)
+│   ├── data/          # 피처 계산, 변환 (features.py, candles.py)
+│   ├── scanner/       # 스코어링, 후보 선정 (scanner.py)
+│   ├── signals/       # ORB/sVWAP/Sweep (orb.py, svwap_pullback.py, sweep.py)
+│   ├── risk/          # 포지션 크기, DDL (guard.py)
+│   ├── order/         # 주문/체결, OCO-like (executor.py)
+│   ├── backtest/      # 선택: 시뮬레이션
+│   ├── utils/         # 공통(시간대, 로그) (config.py, time_utils.py, logging.py)
+│   └── app.py         # 엔트리포인트
+├── configs/
+│   └── config.yaml
+├── runtime/
+│   ├── logs/
+│   └── reports/
+├── tests/
+│   ├── unit/
+│   └── integration/
+```
+
+## 🐍 Python 개발 표준
+
+### 1. 의존성 관리
+- **pyproject.toml** 사용 (PEP 518/621 준수)
+- **Python 3.11+** 필수
+- 핵심 패키지: `requests`, `websockets`, `pandas`, `numpy`, `pyjwt`, `pydantic`, `uvloop`
+
+### 2. 설정 관리
+- **config.yaml**: 모든 파라미터 외부화 (requirement.md 7장 구조 준수)
+- **.env.example**: API 키 등 민감 정보 템플릿
+- **Pydantic**: 설정 검증 및 타입 안전성 보장
+
+### 3. 코드 품질
+- **타입 힌트** 필수 사용
+- **docstring** PEP 257 준수
+- **Makefile**: lint/test/run/docker-* 명령 제공
+- **Black + isort + flake8**: 코드 포매팅 및 린팅
+
+## 📊 핵심 모듈 구현 가이드
+
+### 1. API 모듈 (src/api/)
+```python
+# upbit_rest.py - REST API 클라이언트
+- /v1/market/all?isDetails=true
+- /v1/candles/minutes/{unit}
+- /v1/orderbook?markets=
+- /v1/orders (JWT 인증)
+
+# upbit_ws.py - WebSocket 클라이언트  
+- ticker/trade 채널 구독
+- 자동 재연결 로직
+- 백오프 전략
+```
+
+### 2. 데이터 모듈 (src/data/)
+```python
+# features.py - 피처 계산 (requirement.md 6장 알고리즘)
+- RVOL: rv = vol[-1] / mean(vol[-21:-1])
+- RS(60m): rs = ret60(sym) − ret60(KRW-BTC) 
+- sVWAP: cumsum(price*volume)/cumsum(volume)
+- ATR(14), EMA20/50
+- Trend: (EMA20>EMA50) and (close > sVWAP)
+```
+
+### 3. 스캐너 모듈 (src/scanner/)
+```python
+# scanner.py - 후보 선별 (requirement.md FR-4)
+- 스코어: 0.4×RS + 0.3×RVOL_Z + 0.2×Trend + 0.1×Depth
+- 필터: RVOL≥2, 스프레드≤5bp, Trend=1
+- 상위 2~3개 반환
+```
+
+### 4. 신호 모듈 (src/signals/)
+```python
+# orb.py - ORB 돌파 (requirement.md FR-5A)
+# svwap_pullback.py - sVWAP 되돌림 (requirement.md FR-5B)  
+# sweep.py - 유동성 스윕 (requirement.md FR-5C)
+```
+
+### 5. 주문 모듈 (src/order/)
+```python
+# executor.py - 주문 실행 (requirement.md FR-6)
+- JWT 인증 구현
+- IOC/FOK/BEST 주문 타입
+- 실거래/페이퍼 트레이딩 분기
+- OCO-like 구현
+```
+
+## 🧪 테스트 전략
+
+### 1. Unit Tests (tests/unit/)
+- 각 모듈별 단위 테스트
+- 피처 계산 정확성 검증
+- Mock 객체 활용한 API 테스트
+
+### 2. Integration Tests (tests/integration/)
+- API 연동 테스트 (모의 서버)
+- 전체 워크플로 테스트
+- 페이퍼 트레이딩 검증
+
+## 📝 로깅 및 리포팅
+
+### 1. 로깅 (requirement.md FR-8)
+```python
+# JSON 구조화 로그
+{
+  "timestamp": "2024-01-01T09:10:00+09:00",
+  "level": "INFO", 
+  "module": "scanner",
+  "message": "Found 3 candidates",
+  "data": {"candidates": [...]}
+}
+```
+
+### 2. 리포팅 (runtime/reports/)
+- 일일 요약 JSON 파일
+- PnL, 승률, 기대값 계산
+- 거래 상세 로그
+
+## 🚀 실행 인터페이스
+
+### CLI 명령어
+```bash
+# 스캔 실행
+python -m src.app scan
+
+# 페이퍼 트레이딩 실행  
+python -m src.app run --paper
+
+# 실거래 실행
+python -m src.app run --live
+
+# 백테스트 실행
+python -m src.app backtest --start=2024-01-01 --end=2024-01-31
+```
+
+## ⚙️ 설정 파라미터 (config.yaml)
+
+requirement.md 7장 구조를 정확히 따릅니다:
+```yaml
+exchange:
+  base_url: https://api.upbit.com
+  websocket_url: wss://api.upbit.com/websocket/v1
+
+scanner:
+  rvol_threshold: 2.0
+  spread_bp_max: 5
+  candle_count: 200
+
+signals:
+  orb:
+    use: true
+    breakout_atr_mult: 0.1
+  svwap_pullback:
+    use: true
+    zone_atr_mult: 0.25
+
+risk:
+  per_trade_risk_pct: 0.004
+  daily_drawdown_stop_pct: 0.01
+```
+
+## 🛡️ 보안 및 안전장치
+
+### 1. API 키 관리
+- .env 파일 사용 (.gitignore 포함)
+- 환경 변수로 주입
+- 로그에 노출 방지
+
+### 2. 리스크 관리 (requirement.md FR-7)
+- 포지션 크기 자동 계산
+- DDL(-1%) 도달 시 중단
+- 연속 손절 방지
+
+## 📦 배포 및 실행
+
+### Makefile 명령어
+```make
+install:     # 의존성 설치
+lint:        # 코드 검사
+test:        # 테스트 실행
+run-paper:   # 페이퍼 트레이딩
+run-live:    # 실거래 (주의)
+docker-build: # Docker 이미지 빌드
+```
+
+## 🔄 개발 워크플로
+
+1. **기능 구현**: requirement.md 명세 기반
+2. **단위 테스트**: 각 모듈 검증
+3. **통합 테스트**: 전체 플로우 검증  
+4. **페이퍼 테스트**: 실제 API로 모의거래
+5. **실거래 배포**: 충분한 검증 후
+
+## ⚠️ 중요 주의사항
+
+1. **실거래 금지**: 충분한 테스트 전까지 --paper 모드만 사용
+2. **API 레이트 리밋**: 업비트 제한 준수
+3. **에러 핸들링**: 모든 외부 API 호출에 예외 처리
+4. **로그 민감정보**: API 키, 개인정보 로그 출력 금지
+5. **타임존**: Asia/Seoul 고정 사용
+
+이 규칙들을 준수하여 안전하고 신뢰할 수 있는 업비트 자동매매 시스템을 개발하세요.

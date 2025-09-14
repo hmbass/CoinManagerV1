@@ -1,0 +1,289 @@
+# Upbit Day-Trade Automator (UDA) Configuration
+# Based on requirement.md Section 7: Basic Parameters
+# All thresholds and parameters can be tuned without redeployment
+
+# Exchange Configuration
+exchange:
+  base_url: https://api.upbit.com
+  websocket_url: wss://api.upbit.com/websocket/v1
+  timeout: 30
+  max_retries: 3
+  retry_backoff: 2.0
+
+# Market Symbols Configuration  
+symbols:
+  # Core symbols for RS calculation and monitoring
+  core: 
+    - KRW-BTC
+    - KRW-ETH  
+    - KRW-SOL
+  # Market filtering rules
+  exclude_warning: true
+  exclude_newly_listed_days: 7
+  min_volume_krw: 1000000000  # 10억원 이상 일거래량
+
+# Scanner Configuration (FR-4: Candidate Scoring & Selection)
+scanner:
+  # Candle data requirements
+  candle_unit: 5  # 5-minute candles
+  candle_count: 200  # Must be >= 200 per requirement
+  
+  # RVOL threshold (requirement.md: 2.0, range: 1.5~3.0)
+  rvol_threshold: 2.0
+  rvol_window: 20  # Recent 20 periods for average
+  
+  # Spread threshold (requirement.md: 5bp for KRW market)
+  spread_bp_max: 5
+  
+  # Relative Strength parameters
+  rs_window_minutes: 60  # 60-minute return comparison
+  rs_reference_symbol: KRW-BTC
+  
+  # Trend conditions (requirement.md: EMA20>EMA50 & close>sVWAP)
+  trend:
+    use_vwap: true
+    ema_fast: 20
+    ema_slow: 50
+    
+  # Depth scoring (orderbook liquidity)
+  depth_normalize: log
+  depth_levels: 5  # Top 5 bid/ask levels
+  
+  # Score weighting (requirement.md: 0.4×RS + 0.3×RVOL_Z + 0.2×Trend + 0.1×Depth)
+  score_weights:
+    rs: 0.4
+    rvol: 0.3  
+    trend: 0.2
+    depth: 0.1
+    
+  # Selection criteria
+  candidate_count: 3  # Return top 2~3 candidates
+  min_score: 0.5  # Minimum score threshold
+
+# Signal Generation Configuration (FR-5: Entry Signal Engine)
+signals:
+  # A) ORB Breakout Strategy
+  orb:
+    use: true
+    # Opening Range Box (requirement.md: 09:00-10:00 KST)
+    box_window: "09:00-10:00"
+    # Breakout confirmation (requirement.md: high + 0.1×ATR)
+    breakout_atr_mult: 0.1
+    # Volume spike confirmation (requirement.md: >=1.5× recent average)
+    volume_spike_mult: 1.5
+    volume_lookback: 20
+    
+  # B) sVWAP Pullback Strategy  
+  svwap_pullback:
+    use: true
+    # Entry zone around sVWAP (requirement.md: ±0.25×ATR)
+    zone_atr_mult: 0.25
+    # Additional trend confirmation
+    require_ema_alignment: true
+    min_pullback_pct: 0.5  # Minimum pullback %
+    max_pullback_pct: 2.0  # Maximum pullback %
+    
+  # C) Liquidity Sweep Reversal (Conservative)
+  sweep_reversal:
+    use: false  # Disabled by default - most complex strategy
+    swing_lookback: 50  # Periods to identify swing levels
+    penetration_atr_mult: 0.05  # Small penetration threshold
+    recovery_time_minutes: 15  # Quick recovery requirement
+    volume_spike_mult: 2.0  # Higher volume requirement
+
+# Risk Management Configuration (FR-7: Risk Guard)
+risk:
+  # Position sizing (requirement.md: 0.3~0.5% per trade)
+  per_trade_risk_pct: 0.004  # 0.4% of account
+  min_position_krw: 10000    # 10,000 KRW minimum
+  max_position_krw: 500000   # 500,000 KRW maximum
+  
+  # Daily drawdown limit (requirement.md: -1.0% stop)
+  daily_drawdown_stop_pct: 0.01  # -1.0% daily loss limit
+  
+  # Consecutive loss protection (requirement.md: 2 losses = symbol ban)
+  max_retries_per_setup: 2
+  same_symbol_consecutive_losses_stop: 2
+  
+  # Risk-Reward ratios
+  min_risk_reward_ratio: 1.0   # 1R minimum
+  target_risk_reward_ratio: 1.5 # 1.5R target
+
+# Order Execution Configuration (FR-6: Order/Fill Module)  
+orders:
+  # Slippage protection (requirement.md: 5bp deviation limit)
+  slippage_bp_max: 5
+  
+  # Order types (requirement.md: IOC/FOK/BEST support)
+  order_type: limit  # limit, market
+  time_in_force: IOC  # IOC, FOK, GTC
+  
+  # Order size limits
+  min_order_krw: 5000   # Upbit minimum
+  max_order_krw: 1000000  # 1M KRW max per order
+  
+  # OCO-like implementation
+  use_oco_simulation: true  # Simulate OCO with separate orders
+  fill_timeout_seconds: 300  # 5-minute fill timeout
+  
+  # Paper trading simulation parameters
+  paper_mode:
+    simulate_slippage: true
+    slippage_bp_range: [0, 3]  # Random slippage 0-3bp
+    fill_probability: 0.95     # 95% fill rate simulation
+    fill_delay_ms: [100, 500]  # Realistic fill delay
+
+# Runtime Configuration
+runtime:
+  # Trading sessions (requirement.md: 09:10–13:00, 17:10–19:00 KST)
+  session_windows:
+    - "09:10-13:00"  # Morning session
+    - "17:10-19:00"  # Evening session
+  
+  # Timezone (requirement.md: Asia/Seoul fixed)
+  timezone: "Asia/Seoul"
+  
+  # Scan intervals
+  scan_interval_minutes: 5    # Full scan every 5 minutes  
+  signal_check_interval_seconds: 30  # Signal check every 30s
+  
+  # Data refresh intervals
+  market_data_refresh_minutes: 1      # Market list refresh
+  candle_refresh_seconds: 30          # Candle data refresh
+  orderbook_refresh_seconds: 5        # Orderbook refresh
+  
+  # Performance settings
+  max_concurrent_requests: 10         # API concurrency limit
+  websocket_ping_interval: 30         # WebSocket keepalive
+  
+  # Caching
+  enable_data_cache: true
+  cache_ttl_minutes: 5
+  cache_max_size_mb: 100
+
+# Logging Configuration (FR-8: Logging/Reporting/Journal)
+logging:
+  level: INFO  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  format: json  # json, text
+  
+  # Log files in runtime/logs/
+  files:
+    main: runtime/logs/trading.log
+    error: runtime/logs/error.log
+    debug: runtime/logs/debug.log
+    api: runtime/logs/api.log
+    orders: runtime/logs/orders.log
+    
+  # Log rotation
+  max_file_size_mb: 50
+  backup_count: 10
+  
+  # Structured logging fields
+  include_fields:
+    - timestamp
+    - level  
+    - module
+    - message
+    - data
+    - correlation_id
+
+# Reporting Configuration  
+reporting:
+  # Output directory
+  output_dir: runtime/reports
+  
+  # Report types and schedules
+  daily_report:
+    enabled: true
+    time: "23:59"  # End of day
+    include_charts: false
+    
+  weekly_report:
+    enabled: true
+    day: sunday
+    time: "23:59"
+    
+  trade_journal:
+    enabled: true
+    include_screenshots: false  # Optional feature
+    
+  # Performance metrics
+  metrics:
+    - pnl_total
+    - pnl_daily  
+    - win_rate
+    - avg_r_multiple
+    - max_drawdown
+    - sharpe_ratio
+    - profit_factor
+    - trades_count
+    
+  # Alert thresholds
+  alerts:
+    daily_loss_pct: 0.5      # Alert at -0.5% daily loss
+    consecutive_losses: 3     # Alert after 3 losses
+    api_error_rate: 0.1      # Alert if >10% API errors
+
+# Monitoring & Health Checks
+monitoring:
+  # Health check endpoints (if running as service)
+  health_check:
+    enabled: true
+    port: 8000
+    path: /health
+    
+  # Metrics collection
+  metrics:
+    enabled: true
+    port: 8001
+    path: /metrics
+    interval_seconds: 60
+    
+  # Alerting (Slack/Email integration)
+  alerts:
+    enabled: false  # Configure with actual webhook URLs
+    slack_webhook: ""
+    email_smtp: ""
+    critical_only: true
+
+# Development & Testing
+development:
+  # Debug options
+  debug_mode: false
+  log_api_requests: false
+  log_api_responses: false
+  
+  # Mock data for testing
+  use_mock_data: false
+  mock_data_dir: tests/fixtures
+  
+  # Rate limiting bypass (for testing only)
+  bypass_rate_limits: false
+  
+# Feature Flags
+features:
+  # Experimental features
+  enable_machine_learning: false
+  enable_sentiment_analysis: false
+  enable_technical_indicators_extended: false
+  
+  # Safety features
+  require_confirmation_live_trading: true
+  enable_circuit_breakers: true
+  enable_position_limits: true
+  
+  # Performance features  
+  enable_websocket_streaming: true
+  enable_data_compression: true
+  enable_parallel_processing: true
+
+# Version and Metadata
+metadata:
+  config_version: "1.0"
+  created: "2024-01-01"
+  author: "UDA Trading System"
+  description: "Production configuration for Upbit day-trading automation"
+  
+# Environment-specific overrides (loaded from .env)  
+# These will be overridden by environment variables:
+# UPBIT_ACCESS_KEY, UPBIT_SECRET_KEY, REDIS_URL, etc.

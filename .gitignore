@@ -1,0 +1,114 @@
+# 🔐 Environment & Sensitive Data
+.env
+.env.local
+.env.production
+*.key
+*.pem
+
+# 🐍 Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# 🧪 Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# 🔄 Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+.env/
+
+# 📊 Runtime Data & Logs
+runtime/
+logs/
+*.log
+*.log.*
+
+# 📁 IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+
+# 🖥️ OS Generated Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# 📦 Package Managers
+node_modules/
+.npm
+.yarn/
+yarn-error.log*
+
+# 🔒 Security & API Keys
+config/secrets/
+secrets.yml
+api_keys.json
+private_keys/
+
+# 📈 Trading Data (개인정보 보호)
+backtest_results/
+trading_history/
+portfolio_data/
+personal_trades/
+
+# 🏗️ Build & Deployment
+.terraform/
+*.tfstate
+*.tfstate.*
+docker-compose.override.yml
+k8s-local/
+
+# 📝 Documentation Build
+docs/_build/
+docs/build/
+site/
+
+# 🧹 Temporary Files
+*.tmp
+*.temp
+*.bak
+*.backup
+*~
+.#*
+
+# 🎯 Project Specific
+# Add any project-specific ignores here

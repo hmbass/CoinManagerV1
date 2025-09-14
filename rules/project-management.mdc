@@ -1,0 +1,519 @@
+---
+globs: Makefile,Dockerfile,docker-compose.yml,README.md
+description: Project management, deployment and documentation standards
+---
+
+# 프로젝트 관리 및 배포 표준
+
+## 📁 프로젝트 구조 표준
+
+```
+CoinManagerV1/
+├── .env.example                 # 환경변수 템플릿
+├── .gitignore                   # Git 제외 파일
+├── Dockerfile                   # Docker 이미지 빌드
+├── Makefile                     # 개발/배포 명령어
+├── README.md                    # 프로젝트 문서
+├── pyproject.toml              # Python 프로젝트 설정
+├── configs/
+│   └── config.yaml             # 시스템 설정
+├── runtime/                    # 실행 시 생성되는 파일들
+│   ├── logs/                   # 로그 파일
+│   │   ├── trading.log
+│   │   ├── error.log
+│   │   └── debug.log
+│   ├── reports/                # 일일/주간 리포트
+│   │   ├── daily_20240101.json
+│   │   └── weekly_20240101.json
+│   └── data/                   # 캐시된 데이터
+│       ├── candles/
+│       └── markets/
+├── src/                        # 소스 코드
+│   ├── __init__.py
+│   ├── app.py                  # 메인 애플리케이션
+│   ├── api/                    # 외부 API 클라이언트
+│   ├── data/                   # 데이터 처리
+│   ├── scanner/                # 종목 스캔
+│   ├── signals/                # 신호 생성
+│   ├── risk/                   # 리스크 관리
+│   ├── order/                  # 주문 실행
+│   └── utils/                  # 유틸리티
+├── tests/                      # 테스트 코드
+│   ├── unit/
+│   ├── integration/
+│   ├── fixtures/
+│   └── conftest.py
+└── scripts/                    # 운영 스크립트
+    ├── server-manager.sh       # 서버 관리 (rules/server.mdc 준수)
+    ├── backup.sh              # 데이터 백업
+    └── deploy.sh              # 배포 스크립트
+```
+
+## 🛠️ Makefile 표준 명령어
+
+```make
+# 기본 설정
+.DEFAULT_GOAL := help
+PYTHON := python3.11
+PIP := pip
+VENV := .venv
+
+# 도움말 표시
+help:  ## 사용 가능한 명령어 표시
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
+
+# 개발 환경 설정
+setup: ## 개발 환경 초기 설정
+	$(PYTHON) -m venv $(VENV)
+	$(VENV)/bin/pip install --upgrade pip
+	$(VENV)/bin/pip install -e .[dev]
+	cp .env.example .env
+	mkdir -p runtime/logs runtime/reports runtime/data
+
+install: ## 의존성 패키지 설치
+	$(VENV)/bin/pip install -e .[dev]
+
+# 코드 품질 관리
+format: ## 코드 포매팅 (black + isort)
+	$(VENV)/bin/black src tests
+	$(VENV)/bin/isort src tests
+
+lint: ## 코드 검사 (flake8 + mypy)
+	$(VENV)/bin/flake8 src tests
+	$(VENV)/bin/mypy src
+
+check: format lint ## 전체 코드 품질 검사
+
+# 테스트 실행
+test: ## 전체 테스트 실행
+	$(VENV)/bin/pytest tests/ -v
+
+test-unit: ## 단위 테스트만 실행
+	$(VENV)/bin/pytest tests/unit/ -v
+
+test-integration: ## 통합 테스트만 실행
+	$(VENV)/bin/pytest tests/integration/ -v
+
+test-cov: ## 커버리지 포함 테스트
+	$(VENV)/bin/pytest tests/ -v --cov=src --cov-report=html
+
+# 애플리케이션 실행
+scan: ## 종목 스캔 실행
+	$(VENV)/bin/python -m src.app scan
+
+run-paper: ## 페이퍼 트레이딩 실행
+	$(VENV)/bin/python -m src.app run --paper
+
+run-live: ## ⚠️ 실거래 실행 (확인 필요)
+	@echo "⚠️  실거래 모드입니다. 정말 실행하시겠습니까? [y/N]"
+	@read -r response; \
+	if [ "$$response" = "y" ] || [ "$$response" = "Y" ]; then \
+		$(VENV)/bin/python -m src.app run --live; \
+	else \
+		echo "실거래 실행이 취소되었습니다."; \
+	fi
+
+backtest: ## 백테스트 실행
+	$(VENV)/bin/python -m src.app backtest --start=2024-01-01 --end=2024-01-31
+
+# 서버 관리 (server.mdc 규칙 준수)
+server-start: ## 서버 시작
+	./scripts/server-manager.sh start
+
+server-stop: ## 서버 중지
+	./scripts/server-manager.sh stop
+
+server-restart: ## 서버 재시작
+	./scripts/server-manager.sh restart
+
+server-status: ## 서버 상태 확인
+	./scripts/server-manager.sh status
+
+server-logs: ## 서버 로그 확인
+	./scripts/server-manager.sh logs all
+
+# Docker 관련
+docker-build: ## Docker 이미지 빌드
+	docker build -t upbit-trading:latest .
+
+docker-run-paper: ## Docker로 페이퍼 트레이딩 실행
+	docker run --rm -it \
+		-v $(PWD)/runtime:/app/runtime \
+		-v $(PWD)/.env:/app/.env \
+		upbit-trading:latest run --paper
+
+docker-compose-up: ## Docker Compose로 전체 시스템 시작
+	docker-compose up -d
+
+docker-compose-down: ## Docker Compose 시스템 중지
+	docker-compose down
+
+# 데이터 관리
+backup: ## 데이터 백업
+	./scripts/backup.sh
+
+restore: ## 데이터 복원
+	./scripts/restore.sh $(BACKUP_FILE)
+
+clean-logs: ## 오래된 로그 파일 정리
+	find runtime/logs -name "*.log" -mtime +30 -delete
+
+# 배포 관리
+deploy-staging: ## 스테이징 환경 배포
+	./scripts/deploy.sh staging
+
+deploy-prod: ## 프로덕션 환경 배포
+	./scripts/deploy.sh production
+
+# 유틸리티
+clean: ## 임시 파일 정리
+	rm -rf __pycache__ .pytest_cache .coverage htmlcov
+	find . -name "*.pyc" -delete
+	find . -name "__pycache__" -type d -exec rm -rf {} +
+
+requirements: ## requirements.txt 업데이트
+	$(VENV)/bin/pip freeze > requirements.txt
+
+check-deps: ## 보안 취약점 검사
+	$(VENV)/bin/pip audit
+
+.PHONY: help setup install format lint check test test-unit test-integration test-cov
+.PHONY: scan run-paper run-live backtest server-start server-stop server-restart
+.PHONY: server-status server-logs docker-build docker-run-paper docker-compose-up
+.PHONY: docker-compose-down backup restore clean-logs deploy-staging deploy-prod
+.PHONY: clean requirements check-deps
+```
+
+## 📝 README.md 표준 구조
+
+```markdown
+# Upbit Day-Trade Automator (UDA)
+
+업비트 공개 API를 이용한 규칙 기반 단타 자동매매 시스템
+
+## 🎯 프로젝트 개요
+
+- **목표**: 매일 2~3개 종목 선별 → 규칙 기반 단타 진입/청산 → 손실 제한 및 로그·리포팅 자동화
+- **철학**: "매일 고정 수익"이 아닌 **기대값(Expectancy) 극대화**와 **손실 한도 준수**
+- **범위**: 현물 거래 위주 (선물/레버리지 제외)
+- **시간대**: Asia/Seoul(KST) 고정, 주요 실행 창 09:10–13:00, 17:10–19:00
+
+## 🚀 빠른 시작
+
+### 1. 환경 설정
+```bash
+# 1. 저장소 클론
+git clone <repository-url>
+cd CoinManagerV1
+
+# 2. 개발 환경 설정
+make setup
+
+# 3. 환경 변수 설정
+cp .env.example .env
+# .env 파일을 편집하여 업비트 API 키 입력
+
+# 4. 설정 파일 확인
+vim configs/config.yaml
+```
+
+### 2. 기본 사용법
+```bash
+# 종목 스캔 (Top 2~3 후보 확인)
+make scan
+
+# 페이퍼 트레이딩 실행 (안전한 모의거래)
+make run-paper
+
+# 백테스트 실행
+make backtest
+```
+
+## 📊 주요 기능
+
+### 1. 스마트 스캔 시스템
+- **RVOL**: 최근 5분 거래량 ÷ 과거 5분 평균 거래량
+- **상대강도(RS)**: 종목 수익률 − BTC 수익률  
+- **세션 VWAP**: 당일 거래량 가중 평균가
+- **스코어링**: `0.4×RS + 0.3×RVOL_Z + 0.2×Trend + 0.1×Depth`
+
+### 2. 신호 생성 전략
+- **ORB 돌파**: 시초 60분(09:00–10:00) 고/저 박스 돌파
+- **sVWAP 되돌림**: VWAP 근처 반전 매수
+- **유동성 스윕**: 스윙 레벨 짧은 관통 후 반전
+
+### 3. 리스크 관리
+- **포지션 크기**: 1회 거래 손실 0.3~0.5% 제한
+- **일손실 한도**: -1% 도달 시 당일 중단
+- **연속 손절**: 2회 시 해당 종목 금일 거래 금지
+
+## 🛠️ 개발 도구
+
+### 코드 품질
+```bash
+make format    # 코드 포매팅
+make lint      # 코드 검사  
+make check     # 전체 품질 검사
+```
+
+### 테스트
+```bash
+make test           # 전체 테스트
+make test-unit      # 단위 테스트
+make test-cov       # 커버리지 테스트
+```
+
+### 서버 관리
+```bash
+make server-start   # 서버 시작
+make server-status  # 상태 확인
+make server-logs    # 로그 확인
+make server-stop    # 서버 중지
+```
+
+## 📈 사용 포트
+
+| 서비스 | 포트 | 설명 |
+|--------|------|------|
+| Backend API | 8000 | 메인 API 서버 |
+| WebSocket | 8001 | 실시간 데이터 |
+| Dashboard | 3000 | 모니터링 대시보드 |
+
+## 📁 프로젝트 구조
+
+```
+CoinManagerV1/
+├── src/               # 소스 코드
+│   ├── api/          # Upbit API 클라이언트
+│   ├── data/         # 데이터 처리 및 피처 계산
+│   ├── scanner/      # 종목 스캔 및 후보 선별
+│   ├── signals/      # 매매 신호 생성
+│   ├── risk/         # 리스크 관리
+│   ├── order/        # 주문 실행
+│   └── utils/        # 공통 유틸리티
+├── configs/          # 설정 파일
+├── runtime/          # 실행 시 생성 파일
+│   ├── logs/         # 로그 파일
+│   └── reports/      # 거래 리포트
+└── tests/            # 테스트 코드
+```
+
+## 🔧 설정 파일
+
+### config.yaml 주요 설정
+```yaml
+scanner:
+  rvol_threshold: 2.0      # RVOL 임계값
+  spread_bp_max: 5         # 최대 스프레드 (bp)
+  
+risk:
+  per_trade_risk_pct: 0.004   # 1회 거래 위험도 (0.4%)
+  daily_drawdown_stop_pct: 0.01  # 일손실 한도 (-1%)
+
+runtime:
+  session_windows:
+    - "09:10-13:00"     # 1차 거래 세션
+    - "17:10-19:00"     # 2차 거래 세션
+```
+
+## 🚨 중요 주의사항
+
+1. **페이퍼 모드 우선**: 충분한 테스트 없이 실거래 금지
+2. **API 레이트 리밋**: 업비트 API 제한 준수
+3. **리스크 관리**: 설정된 손실 한도 절대 준수
+4. **백업**: 중요 데이터는 정기적으로 백업
+5. **모니터링**: 실행 중 지속적인 로그 모니터링 필수
+
+## 📊 모니터링 및 리포팅
+
+- **실시간 로그**: `runtime/logs/trading.log`
+- **일일 리포트**: `runtime/reports/daily_YYYYMMDD.json`
+- **에러 로그**: `runtime/logs/error.log`
+
+## 🤝 기여 방법
+
+1. 이슈 등록 및 논의
+2. 브랜치 생성 (`feature/new-feature`)
+3. 코드 작성 및 테스트
+4. PR 생성 및 리뷰
+
+## 📄 라이선스
+
+MIT License - 상세 내용은 LICENSE 파일 참고
+
+## 🆘 지원 및 문의
+
+- GitHub Issues: 버그 리포트 및 기능 요청
+- 문서: requirement.md 참고
+```
+
+## 🐳 Docker 설정
+
+### Dockerfile
+```dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# 시스템 의존성 설치
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python 의존성 설치
+COPY pyproject.toml ./
+RUN pip install --no-cache-dir .
+
+# 소스 코드 복사
+COPY src/ ./src/
+COPY configs/ ./configs/
+
+# 실행 시 생성될 디렉토리 생성
+RUN mkdir -p runtime/logs runtime/reports runtime/data
+
+# 비root 사용자 생성
+RUN useradd -m -u 1000 trader
+RUN chown -R trader:trader /app
+USER trader
+
+# 포트 노출
+EXPOSE 8000 8001
+
+# 기본 명령어
+CMD ["python", "-m", "src.app", "run", "--paper"]
+```
+
+### docker-compose.yml
+```yaml
+version: '3.8'
+
+services:
+  trading-app:
+    build: .
+    container_name: upbit-trading
+    restart: unless-stopped
+    environment:
+      - ENV=production
+    env_file:
+      - .env
+    volumes:
+      - ./runtime:/app/runtime
+      - ./configs:/app/configs:ro
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    
+  redis:
+    image: redis:7-alpine
+    container_name: trading-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    
+  nginx:
+    image: nginx:alpine
+    container_name: trading-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/ssl:ro
+    depends_on:
+      - trading-app
+
+volumes:
+  redis_data:
+```
+
+## 📋 운영 스크립트
+
+### scripts/backup.sh
+```bash
+#!/bin/bash
+# 데이터 백업 스크립트
+
+DATE=$(date +%Y%m%d_%H%M%S)
+BACKUP_DIR="backups"
+BACKUP_FILE="trading_backup_${DATE}.tar.gz"
+
+mkdir -p "$BACKUP_DIR"
+
+echo "🔄 백업 시작: $DATE"
+
+# 런타임 데이터 백업
+tar -czf "${BACKUP_DIR}/${BACKUP_FILE}" \
+    runtime/reports \
+    runtime/data \
+    configs/config.yaml \
+    .env
+
+echo "✅ 백업 완료: ${BACKUP_DIR}/${BACKUP_FILE}"
+
+# 30일 이상 된 백업 파일 삭제
+find "$BACKUP_DIR" -name "trading_backup_*.tar.gz" -mtime +30 -delete
+
+echo "🗑️  오래된 백업 파일 정리 완료"
+```
+
+### scripts/deploy.sh
+```bash
+#!/bin/bash
+# 배포 스크립트
+
+ENVIRONMENT=${1:-staging}
+DOCKER_IMAGE="upbit-trading:latest"
+
+echo "🚀 $ENVIRONMENT 환경 배포 시작"
+
+# 이미지 빌드
+echo "📦 Docker 이미지 빌드 중..."
+docker build -t "$DOCKER_IMAGE" .
+
+# 기존 컨테이너 중지
+echo "🛑 기존 서비스 중지 중..."
+docker-compose down
+
+# 백업 생성
+echo "💾 배포 전 백업 생성 중..."
+./scripts/backup.sh
+
+# 새 서비스 시작
+echo "🔄 새 서비스 시작 중..."
+docker-compose up -d
+
+# 헬스체크
+echo "🏥 서비스 상태 확인 중..."
+sleep 10
+
+if curl -f http://localhost:8000/health > /dev/null 2>&1; then
+    echo "✅ 배포 성공: $ENVIRONMENT"
+else
+    echo "❌ 배포 실패: 헬스체크 실패"
+    exit 1
+fi
+```
+
+## 🔍 모니터링 및 알림
+
+### 로그 관리
+- **구조화된 JSON 로그**: 파싱 및 분석 용이
+- **로그 레벨**: DEBUG, INFO, WARNING, ERROR, CRITICAL
+- **로그 로테이션**: 일일 단위 압축 및 보관
+- **에러 알림**: 중요 오류 발생 시 Slack/Email 알림
+
+### 메트릭 수집
+- **거래 성과**: 승률, 평균 R, 기대값
+- **시스템 상태**: CPU, 메모리, 네트워크
+- **API 사용량**: 요청 수, 응답 시간, 에러율
+
+이 표준을 준수하여 체계적이고 관리 가능한 트레이딩 시스템을 구축하세요.
