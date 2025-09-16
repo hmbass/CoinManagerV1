@@ -294,6 +294,31 @@ class TradingSystem:
                 candidate.market for candidate in scan_result.candidates
             ]
             
+            # Send candidate alert notification
+            try:
+                from .utils.telegram import get_telegram_notifier
+                notifier = get_telegram_notifier()
+                if notifier and notifier.enabled:
+                    # Convert feature results to dict format for telegram
+                    candidates_dict = []
+                    for candidate in scan_result.candidates:
+                        candidates_dict.append({
+                            'market': candidate.market,
+                            'score': candidate.score,
+                            'rvol': candidate.rvol,
+                            'rs': candidate.rs,
+                            'trend': candidate.trend
+                        })
+                    
+                    await notifier.send_candidate_alert(
+                        candidates=candidates_dict,
+                        scan_duration=scan_result.scan_duration_seconds,
+                        total_markets=scan_result.total_markets,
+                        is_paper=self.is_paper_trading
+                    )
+            except Exception as e:
+                self.logger.warning(f"Failed to send candidate alert: {e}")
+            
             # Schedule next scan
             self.state.next_scan_time = get_kst_now() + timedelta(
                 minutes=self.config.runtime.scan_interval_minutes

@@ -638,20 +638,47 @@ class OrderExecutor:
             orders.append(entry_result)
             
             if entry_result.status == OrderStatus.FILLED:
-                # Send Telegram notification for successful trade
+                # Send detailed Telegram notification for successful trade
                 strategy_name = signal_type.upper().replace('_', ' ')
                 total_value = entry_result.quantity_filled * entry_result.price_filled
                 
+                # Prepare technical indicators for telegram
+                indicators = {}
+                if hasattr(signal, 'features'):
+                    features = signal.features
+                    indicators = {
+                        'rvol': getattr(features, 'rvol', None),
+                        'rs': getattr(features, 'rs', None),
+                        'trend': getattr(features, 'trend', None),
+                        'ema20': getattr(features, 'ema20', None),
+                        'ema50': getattr(features, 'ema50', None),
+                        'svwap': getattr(features, 'svwap', None),
+                        'atr': getattr(features, 'atr', None)
+                    }
+                    # Remove None values
+                    indicators = {k: v for k, v in indicators.items() if v is not None}
+                
+                # Prepare trade reason
+                trade_reason = f"{strategy_name} signal detected"
+                if hasattr(signal, 'confidence'):
+                    trade_reason += f" (confidence: {signal.confidence:.2f})"
+                
                 try:
-                    await send_trade_notification(
-                        trade_type="BUY" if side == OrderSide.BUY else "SELL",
-                        market=signal.market,
-                        quantity=entry_result.quantity_filled,
-                        price=entry_result.price_filled,
-                        total_value=total_value,
-                        strategy=strategy_name,
-                        is_paper=self.is_paper_mode
-                    )
+                    from ..utils.telegram import get_telegram_notifier
+                    notifier = get_telegram_notifier()
+                    if notifier and notifier.enabled:
+                        await notifier.send_trade_alert(
+                            trade_type="BUY" if side == OrderSide.BUY else "SELL",
+                            market=signal.market,
+                            quantity=entry_result.quantity_filled,
+                            price=entry_result.price_filled,
+                            total_value=total_value,
+                            strategy=strategy_name,
+                            is_paper=self.is_paper_mode,
+                            reason=trade_reason,
+                            score=getattr(signal, 'score', None),
+                            indicators=indicators if indicators else None
+                        )
                 except Exception as e:
                     self.logger.warning(f"Failed to send Telegram trade notification: {e}")
                 # Create position
@@ -839,17 +866,26 @@ class OrderExecutor:
                 
                 self._save_order_data()
                 
-                # Send Telegram notification for position closure
+                # Send detailed Telegram notification for position closure
                 try:
-                    await send_trade_notification(
-                        trade_type="SELL" if position.side == OrderSide.BUY else "BUY",
-                        market=position.market,
-                        quantity=position.quantity,
-                        price=position.exit_price,
-                        total_value=position.quantity * position.exit_price,
-                        strategy=f"CLOSE ({reason.upper()})",
-                        is_paper=self.is_paper_mode
-                    )
+                    from ..utils.telegram import get_telegram_notifier
+                    notifier = get_telegram_notifier()
+                    if notifier and notifier.enabled:
+                        # Calculate P&L percentage
+                        pnl_pct = (position.realized_pnl / (position.entry_price * position.quantity)) * 100
+                        
+                        # Send position update notification
+                        await notifier.send_position_update(
+                            market=position.market,
+                            action="CLOSED",
+                            current_pnl=position.realized_pnl,
+                            current_pnl_pct=pnl_pct,
+                            entry_price=position.entry_price,
+                            current_price=position.exit_price,
+                            quantity=position.quantity,
+                            reason=reason,
+                            is_paper=self.is_paper_mode
+                        )
                 except Exception as e:
                     self.logger.warning(f"Failed to send Telegram close notification: {e}")
                 

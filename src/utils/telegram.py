@@ -96,7 +96,10 @@ class TelegramNotifier:
         price: float,
         total_value: float,
         strategy: str,
-        is_paper: bool = False
+        is_paper: bool = False,
+        reason: Optional[str] = None,
+        score: Optional[float] = None,
+        indicators: Optional[Dict[str, Any]] = None
     ) -> bool:
         """Send trading execution alert.
         
@@ -108,6 +111,9 @@ class TelegramNotifier:
             total_value: Total trade value in KRW
             strategy: Trading strategy used
             is_paper: Whether this is paper trading
+            reason: Trading reason/signal description
+            score: Trading signal score
+            indicators: Technical indicators used
             
         Returns:
             True if sent successfully
@@ -117,6 +123,7 @@ class TelegramNotifier:
         
         timestamp = get_kst_now().strftime("%H:%M:%S")
         
+        # Base message
         message = f"""
 {mode_emoji} <b>{'PAPER' if is_paper else 'LIVE'} TRADING ALERT</b>
 
@@ -126,12 +133,159 @@ class TelegramNotifier:
 
 💎 Quantity: <code>{quantity:.8f}</code>
 💰 Price: <code>{price:,.0f} KRW</code>
-💸 Total: <code>{total_value:,.0f} KRW</code>
-
-⏰ Time: <code>{timestamp} KST</code>
-        """.strip()
+💸 Total: <code>{total_value:,.0f} KRW</code>"""
         
-        return await self.send_message(message)
+        # Add score if provided
+        if score is not None:
+            message += f"\n🎯 Score: <code>{score:.3f}</code>"
+        
+        # Add reason if provided
+        if reason:
+            message += f"\n📋 Reason: <code>{reason}</code>"
+        
+        # Add indicators if provided
+        if indicators:
+            message += "\n\n📈 <b>Technical Indicators:</b>"
+            if 'rvol' in indicators:
+                message += f"\n• RVOL: <code>{indicators['rvol']:.2f}</code>"
+            if 'rs' in indicators:
+                rs_pct = indicators['rs'] * 100
+                message += f"\n• RS: <code>{rs_pct:+.2f}%</code>"
+            if 'trend' in indicators:
+                trend_emoji = "✅" if indicators['trend'] else "❌"
+                message += f"\n• Trend: {trend_emoji}"
+            if 'ema20' in indicators and 'ema50' in indicators:
+                message += f"\n• EMA20: <code>{indicators['ema20']:,.0f}</code>"
+                message += f"\n• EMA50: <code>{indicators['ema50']:,.0f}</code>"
+            if 'svwap' in indicators:
+                message += f"\n• sVWAP: <code>{indicators['svwap']:,.0f}</code>"
+            if 'atr' in indicators:
+                message += f"\n• ATR: <code>{indicators['atr']:.2f}</code>"
+        
+        message += f"\n\n⏰ Time: <code>{timestamp} KST</code>"
+        
+        # Add paper mode reminder
+        if is_paper:
+            message += "\n\n📝 <i>This is a paper trading simulation</i>"
+        
+        return await self.send_message(message.strip())
+    
+    async def send_candidate_alert(
+        self,
+        candidates: list,
+        scan_duration: float,
+        total_markets: int,
+        is_paper: bool = False
+    ) -> bool:
+        """Send market scan candidates alert.
+        
+        Args:
+            candidates: List of trading candidates
+            scan_duration: Scan duration in seconds
+            total_markets: Total markets scanned
+            is_paper: Whether this is paper trading mode
+            
+        Returns:
+            True if sent successfully
+        """
+        mode_emoji = "📝" if is_paper else "💰"
+        timestamp = get_kst_now().strftime("%H:%M:%S")
+        
+        message = f"""
+{mode_emoji} <b>{'PAPER' if is_paper else 'LIVE'} MARKET SCAN COMPLETE</b>
+
+🔍 <b>Scan Results:</b>
+📊 Markets Scanned: <code>{total_markets}</code>
+🎯 Candidates Found: <code>{len(candidates)}</code>
+⏱️ Duration: <code>{scan_duration:.1f}s</code>
+        """
+        
+        if candidates:
+            message += "\n\n🏆 <b>Top Candidates:</b>"
+            for i, candidate in enumerate(candidates[:3], 1):
+                market = candidate.get('market', 'N/A')
+                score = candidate.get('score', 0)
+                rvol = candidate.get('rvol', 0)
+                rs = candidate.get('rs', 0) * 100  # Convert to percentage
+                trend = candidate.get('trend', 0)
+                
+                trend_emoji = "✅" if trend else "❌"
+                
+                message += f"""
+#{i} <code>{market}</code>
+   Score: <code>{score:.3f}</code> | RVOL: <code>{rvol:.2f}</code>
+   RS: <code>{rs:+.2f}%</code> | Trend: {trend_emoji}"""
+        else:
+            message += "\n\n❌ <b>No candidates found this scan</b>"
+        
+        message += f"\n\n⏰ Time: <code>{timestamp} KST</code>"
+        
+        if is_paper:
+            message += "\n\n📝 <i>Paper trading mode - Ready for simulation</i>"
+        
+        return await self.send_message(message.strip())
+    
+    async def send_position_update(
+        self,
+        market: str,
+        action: str,  # "OPENED", "CLOSED", "UPDATED"
+        current_pnl: float,
+        current_pnl_pct: float,
+        entry_price: float,
+        current_price: float,
+        quantity: float,
+        reason: Optional[str] = None,
+        is_paper: bool = False
+    ) -> bool:
+        """Send position update alert.
+        
+        Args:
+            market: Market symbol
+            action: Position action
+            current_pnl: Current P&L in KRW
+            current_pnl_pct: Current P&L percentage
+            entry_price: Entry price
+            current_price: Current price
+            quantity: Position quantity
+            reason: Update reason
+            is_paper: Whether this is paper trading
+            
+        Returns:
+            True if sent successfully
+        """
+        mode_emoji = "📝" if is_paper else "💰"
+        
+        # Action emojis
+        action_emojis = {
+            "OPENED": "🟢",
+            "CLOSED": "🔴" if current_pnl < 0 else "🟢",
+            "UPDATED": "🔄"
+        }
+        
+        action_emoji = action_emojis.get(action, "📊")
+        pnl_emoji = "📈" if current_pnl >= 0 else "📉"
+        
+        timestamp = get_kst_now().strftime("%H:%M:%S")
+        
+        message = f"""
+{mode_emoji} <b>{'PAPER' if is_paper else 'LIVE'} POSITION {action}</b>
+
+{action_emoji} <b>{market}</b>
+📊 Quantity: <code>{quantity:.8f}</code>
+💰 Entry: <code>{entry_price:,.0f} KRW</code>
+📈 Current: <code>{current_price:,.0f} KRW</code>
+
+{pnl_emoji} <b>P&L: {current_pnl:+,.0f} KRW ({current_pnl_pct:+.2f}%)</b>"""
+        
+        if reason:
+            message += f"\n📋 Reason: <code>{reason}</code>"
+        
+        message += f"\n\n⏰ Time: <code>{timestamp} KST</code>"
+        
+        if is_paper:
+            message += "\n\n📝 <i>Paper trading simulation</i>"
+        
+        return await self.send_message(message.strip())
     
     async def send_risk_alert(
         self,
@@ -231,7 +385,10 @@ class TelegramNotifier:
         win_rate: float,
         best_trade: Optional[float] = None,
         worst_trade: Optional[float] = None,
-        is_paper: bool = False
+        is_paper: bool = False,
+        strategies_used: Optional[Dict[str, int]] = None,
+        total_scans: Optional[int] = None,
+        avg_scan_duration: Optional[float] = None
     ) -> bool:
         """Send daily trading summary.
         
@@ -243,6 +400,9 @@ class TelegramNotifier:
             best_trade: Best trade P&L
             worst_trade: Worst trade P&L
             is_paper: Whether this is paper trading
+            strategies_used: Dictionary of strategies and their usage count
+            total_scans: Total number of market scans
+            avg_scan_duration: Average scan duration
             
         Returns:
             True if sent successfully
@@ -252,23 +412,43 @@ class TelegramNotifier:
         
         today = get_kst_now().strftime("%Y-%m-%d")
         
+        # Header with mode indication
+        mode_text = "PAPER TRADING" if is_paper else "LIVE TRADING"
         message = f"""
-{mode_emoji} <b>DAILY SUMMARY - {today}</b>
+{mode_emoji} <b>{mode_text} DAILY SUMMARY</b>
+📅 <b>{today}</b>
 
-📊 <b>Performance</b>
+📊 <b>Trading Performance</b>
 🎯 Total Trades: <code>{total_trades}</code>
 🏆 Winning Trades: <code>{winning_trades}</code>
 📈 Win Rate: <code>{win_rate:.1f}%</code>
 
 {pnl_emoji} <b>P&L Summary</b>
-💰 Total P&L: <code>{total_pnl:+,.0f} KRW</code>
-        """.strip()
+💰 Total P&L: <code>{total_pnl:+,.0f} KRW</code>"""
         
         if best_trade is not None:
             message += f"\n🎉 Best Trade: <code>{best_trade:+,.0f} KRW</code>"
         
         if worst_trade is not None:
             message += f"\n😞 Worst Trade: <code>{worst_trade:+,.0f} KRW</code>"
+        
+        # Add scanning statistics for paper mode
+        if is_paper and total_scans is not None:
+            message += f"\n\n🔍 <b>Scanning Statistics</b>"
+            message += f"\n📊 Total Scans: <code>{total_scans}</code>"
+            if avg_scan_duration is not None:
+                message += f"\n⏱️ Avg Duration: <code>{avg_scan_duration:.1f}s</code>"
+        
+        # Add strategy breakdown
+        if strategies_used:
+            message += f"\n\n📊 <b>Strategies Used</b>"
+            for strategy, count in strategies_used.items():
+                message += f"\n• {strategy}: <code>{count}</code> trades"
+        
+        # Add paper mode reminder
+        if is_paper:
+            message += f"\n\n📝 <i>Paper trading test results</i>"
+            message += f"\n💡 <i>Monitor performance before going live!</i>"
         
         return await self.send_message(message)
     

@@ -89,32 +89,66 @@ activate_venv() {
     source "$VENV_PATH/bin/activate"
 }
 
-start_scanner() {
-    log_message "INFO" "🔍 Starting market scanner..."
+start_trading_system() {
+    log_message "INFO" "🚀 Starting trading system..."
     
     check_python_env
     activate_venv
     
     cd "$PROJECT_ROOT"
     
-    # Run scanner in background
-    nohup python3 -m src.app scan > "$TRADING_LOG" 2>&1 &
-    echo $! > "$LOG_DIR/scanner.pid"
+    # Check trading mode from .env
+    TRADING_MODE=$(grep "TRADING_MODE=" .env | cut -d'=' -f2 | tr -d ' ')
     
-    log_message "INFO" "Market scanner started (PID: $(cat $LOG_DIR/scanner.pid))"
+    if [ "$TRADING_MODE" = "live" ]; then
+        log_message "WARN" "⚠️  LIVE TRADING MODE - Real money will be used!"
+        log_message "INFO" "Starting live trading system..."
+        nohup python3 -m src.app run --live > "$TRADING_LOG" 2>&1 &
+    else
+        log_message "INFO" "📄 Paper trading mode - Safe simulation"
+        nohup python3 -m src.app run --paper > "$TRADING_LOG" 2>&1 &
+    fi
+    
+    echo $! > "$LOG_DIR/trading.pid"
+    
+    log_message "INFO" "Trading system started (PID: $(cat $LOG_DIR/trading.pid))"
+    log_message "INFO" "Mode: $TRADING_MODE"
 }
 
-stop_scanner() {
+# Legacy function name for compatibility
+start_scanner() {
+    start_trading_system
+}
+
+stop_trading_system() {
+    # Stop trading system
+    if [ -f "$LOG_DIR/trading.pid" ]; then
+        local pid=$(cat "$LOG_DIR/trading.pid")
+        if kill -0 $pid 2>/dev/null; then
+            kill $pid
+            log_message "INFO" "Trading system stopped (PID: $pid)"
+        fi
+        rm -f "$LOG_DIR/trading.pid"
+    fi
+    
+    # Stop legacy scanner PID if exists
     if [ -f "$LOG_DIR/scanner.pid" ]; then
         local pid=$(cat "$LOG_DIR/scanner.pid")
         if kill -0 $pid 2>/dev/null; then
             kill $pid
-            log_message "INFO" "Scanner stopped (PID: $pid)"
+            log_message "INFO" "Legacy scanner stopped (PID: $pid)"
         fi
         rm -f "$LOG_DIR/scanner.pid"
-    else
-        log_message "WARN" "Scanner PID file not found"
     fi
+    
+    if [ ! -f "$LOG_DIR/trading.pid" ] && [ ! -f "$LOG_DIR/scanner.pid" ]; then
+        log_message "WARN" "No running processes found"
+    fi
+}
+
+# Legacy function name for compatibility
+stop_scanner() {
+    stop_trading_system
 }
 
 run_health_check() {
@@ -130,21 +164,38 @@ run_health_check() {
 show_status() {
     log_message "INFO" "📊 System Status"
     
-    # Check if scanner is running
-    if [ -f "$LOG_DIR/scanner.pid" ]; then
+    # Check if trading system is running
+    if [ -f "$LOG_DIR/trading.pid" ]; then
+        local pid=$(cat "$LOG_DIR/trading.pid")
+        if kill -0 $pid 2>/dev/null; then
+            # Get trading mode
+            TRADING_MODE=$(grep "TRADING_MODE=" "$PROJECT_ROOT/.env" | cut -d'=' -f2 | tr -d ' ')
+            log_message "INFO" "Trading System: ✅ Running (PID: $pid, Mode: $TRADING_MODE)"
+        else
+            log_message "WARN" "Trading System: ❌ Stopped (stale PID file)"
+            rm -f "$LOG_DIR/trading.pid"
+        fi
+    # Check legacy scanner PID
+    elif [ -f "$LOG_DIR/scanner.pid" ]; then
         local pid=$(cat "$LOG_DIR/scanner.pid")
         if kill -0 $pid 2>/dev/null; then
-            log_message "INFO" "Scanner: Running (PID: $pid)"
+            log_message "INFO" "Legacy Scanner: ⚠️  Running (PID: $pid) - Only scanning, no trading"
         else
-            log_message "WARN" "Scanner: Stopped (stale PID file)"
+            log_message "WARN" "Legacy Scanner: ❌ Stopped (stale PID file)"
             rm -f "$LOG_DIR/scanner.pid"
         fi
     else
-        log_message "INFO" "Scanner: Not running"
+        log_message "INFO" "Trading System: ❌ Not running"
     fi
     
     # Check configuration
     if [ -f "$PROJECT_ROOT/.env" ]; then
+        TRADING_MODE=$(grep "TRADING_MODE=" "$PROJECT_ROOT/.env" | cut -d'=' -f2 | tr -d ' ')
+        if [ "$TRADING_MODE" = "live" ]; then
+            log_message "WARN" "Configuration: ⚠️  LIVE MODE - Real money trading enabled"
+        else
+            log_message "INFO" "Configuration: ✅ Paper mode - Safe simulation"
+        fi
         log_message "INFO" "Configuration: ✅ .env file present"
     else
         log_message "WARN" "Configuration: ❌ .env file missing"
