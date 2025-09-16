@@ -62,17 +62,19 @@ class CandidateScanner:
     
     @log_performance
     async def get_tradable_markets(self) -> List[str]:
-        """Get list of tradable markets after filtering.
+        """Get list of tradable markets after filtering with rate limit optimization.
         
         Returns:
-            List of market codes
+            List of market codes (limited for rate limiting)
         """
         with correlation_context():
             # Get all markets with details
             all_markets = await self.api_client.get_markets(is_details=True)
             
             tradable_markets = []
+            priority_markets_found = []
             
+            # First pass: collect all valid markets
             for market in all_markets:
                 market_code = market.get('market', '')
                 
@@ -90,18 +92,38 @@ class CandidateScanner:
                 # Filter 3: Exclude newly listed (simplified - no listing date check)
                 # In production, implement proper listing date check
                 
-                tradable_markets.append(market_code)
+                # Check if this is a priority market
+                if market_code in self.config.symbols.priority_markets:
+                    priority_markets_found.append(market_code)
+                else:
+                    tradable_markets.append(market_code)
+            
+            # Second pass: apply market limits for rate limiting
+            final_markets = []
+            
+            # Always include priority markets first
+            final_markets.extend(priority_markets_found)
+            
+            # Add remaining markets up to limit
+            remaining_slots = self.config.symbols.max_markets_to_scan - len(priority_markets_found)
+            if remaining_slots > 0:
+                # Sort remaining markets alphabetically for consistency
+                tradable_markets.sort()
+                final_markets.extend(tradable_markets[:remaining_slots])
             
             self.logger.info(
-                f"Market filtering complete",
+                f"Market filtering complete (rate limit optimized)",
                 data={
                     "total_markets": len(all_markets),
                     "krw_markets": len([m for m in all_markets if m.get('market', '').startswith('KRW-')]),
-                    "tradable_markets": len(tradable_markets)
+                    "priority_markets": len(priority_markets_found),
+                    "additional_markets": len(final_markets) - len(priority_markets_found),
+                    "final_tradable_markets": len(final_markets),
+                    "max_limit": self.config.symbols.max_markets_to_scan
                 }
             )
             
-            return tradable_markets
+            return final_markets
     
     async def get_market_data(
         self,

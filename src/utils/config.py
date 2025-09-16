@@ -19,8 +19,8 @@ class ExchangeConfig(BaseModel):
     websocket_url: str = Field(default="wss://api.upbit.com/websocket/v1", description="WebSocket URL")
     timeout: int = Field(default=30, ge=1, le=300, description="Request timeout in seconds")
     max_retries: int = Field(default=3, ge=1, le=10, description="Maximum retry attempts")
-    retry_backoff: float = Field(default=2.0, ge=0.1, le=10.0, description="Retry backoff multiplier")
-    max_concurrent_requests: int = Field(default=5, ge=1, le=20, description="Maximum concurrent requests")
+    retry_backoff: float = Field(default=3.0, ge=0.1, le=10.0, description="Retry backoff multiplier")
+    max_concurrent_requests: int = Field(default=3, ge=1, le=10, description="Maximum concurrent requests (conservative for rate limiting)")
 
 
 class SymbolsConfig(BaseModel):
@@ -29,7 +29,17 @@ class SymbolsConfig(BaseModel):
     core: List[str] = Field(default=["KRW-BTC", "KRW-ETH", "KRW-SOL"], description="Core symbols for RS calculation")
     exclude_warning: bool = Field(default=True, description="Exclude warning/caution markets")
     exclude_newly_listed_days: int = Field(default=7, ge=1, le=30, description="Days to exclude newly listed symbols")
-    min_volume_krw: int = Field(default=1_000_000_000, ge=0, description="Minimum daily volume in KRW")
+    min_volume_krw: int = Field(default=5_000_000_000, ge=0, description="Minimum daily volume in KRW (increased for rate limiting)")
+    max_markets_to_scan: int = Field(default=50, ge=10, le=200, description="Maximum number of markets to scan (for rate limiting)")
+    priority_markets: List[str] = Field(
+        default=[
+            "KRW-BTC", "KRW-ETH", "KRW-SOL", "KRW-ADA", "KRW-DOT", "KRW-AVAX", 
+            "KRW-MATIC", "KRW-ATOM", "KRW-LINK", "KRW-XRP", "KRW-NEAR", "KRW-UNI",
+            "KRW-MANA", "KRW-SAND", "KRW-CRO", "KRW-SHIB", "KRW-DOGE", "KRW-TRX",
+            "KRW-ETC", "KRW-BCH", "KRW-LTC", "KRW-EOS", "KRW-XLM", "KRW-VET"
+        ],
+        description="Priority markets to always include in scanning"
+    )
 
 
 class TrendConfig(BaseModel):

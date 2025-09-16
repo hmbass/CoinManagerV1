@@ -142,24 +142,50 @@ class UpbitRestClient:
         return token
     
     async def _wait_for_rate_limit(self):
-        """Wait if necessary to respect rate limits."""
+        """Wait if necessary to respect rate limits.
+        
+        Upbit API limits:
+        - Public API: 10 requests per second
+        - Private API: 5 requests per second  
+        - Total: 600 requests per minute (conservative)
+        """
         async with self._rate_limit_lock:
             now = time.time()
             
             # Remove old requests (older than 1 minute)
             self._request_times = [t for t in self._request_times if now - t < 60]
             
-            # Check if we need to wait
-            if len(self._request_times) >= 600:  # 600 requests per minute limit
+            # Conservative rate limiting: 300 requests per minute
+            max_requests_per_minute = 300
+            
+            # Check per-minute limit
+            if len(self._request_times) >= max_requests_per_minute:
                 oldest_request = min(self._request_times)
                 wait_time = 60 - (now - oldest_request)
                 
                 if wait_time > 0:
                     self.logger.warning(
-                        f"Rate limit approaching, waiting {wait_time:.2f} seconds",
+                        f"Rate limit approaching (minute), waiting {wait_time:.2f} seconds",
                         data={"wait_time": wait_time, "requests_in_window": len(self._request_times)}
                     )
                     await asyncio.sleep(wait_time)
+            
+            # Check per-second limit (more conservative)
+            recent_requests = [t for t in self._request_times if now - t < 1]
+            max_requests_per_second = 8  # Conservative limit
+            
+            if len(recent_requests) >= max_requests_per_second:
+                wait_time = 1.0 - (now - max(recent_requests))
+                if wait_time > 0:
+                    self.logger.debug(
+                        f"Rate limit approaching (second), waiting {wait_time:.2f} seconds",
+                        data={"wait_time": wait_time, "requests_in_last_second": len(recent_requests)}
+                    )
+                    await asyncio.sleep(wait_time)
+            
+            # Add small delay between requests to be extra safe
+            if self._request_times and now - self._request_times[-1] < 0.1:
+                await asyncio.sleep(0.1)
             
             self._request_times.append(now)
     
@@ -246,12 +272,25 @@ class UpbitRestClient:
                 return response.json()
             
             elif response.status_code == 429:
-                # Rate limit exceeded
+                # Rate limit exceeded - use more aggressive backoff
                 if retry_count < self.config.max_retries:
-                    wait_time = (2 ** retry_count) * self.config.retry_backoff
+                    # More conservative backoff for rate limits
+                    base_wait = max(5.0, self.config.retry_backoff)  # Minimum 5 seconds
+                    wait_time = min(base_wait * (2 ** retry_count), 60.0)  # Cap at 60 seconds
+                    
+                    # Add jitter to avoid thundering herd
+                    import random
+                    jitter = random.uniform(0.1, 0.3) * wait_time
+                    wait_time += jitter
+                    
                     self.logger.warning(
-                        f"Rate limit exceeded, retrying in {wait_time}s",
-                        data={"retry_count": retry_count, "wait_time": wait_time}
+                        f"Rate limit exceeded, retrying in {wait_time:.1f}s (attempt {retry_count + 1}/{self.config.max_retries})",
+                        data={
+                            "retry_count": retry_count, 
+                            "wait_time": wait_time,
+                            "endpoint": endpoint,
+                            "method": method
+                        }
                     )
                     await asyncio.sleep(wait_time)
                     return await self._make_request(method, endpoint, params, data, require_auth, retry_count + 1)
@@ -351,47 +390,91 @@ class UpbitRestClient:
         self,
         markets: List[str],
         unit: int = 5,
-        count: int = 200
+        count: int = 200,
+        batch_size: Optional[int] = None,
+        batch_delay: float = 1.0
     ) -> Dict[str, List[Dict[str, Any]]]:
-        """Get candle data for multiple markets concurrently.
+        """Get candle data for multiple markets with batched processing.
         
         Args:
             markets: List of market codes
             unit: Candle unit in minutes
             count: Number of candles per market
+            batch_size: Number of concurrent requests per batch (default: max_concurrent_requests)
+            batch_delay: Delay between batches in seconds
             
         Returns:
             Dict mapping market codes to candle data
         """
         with correlation_context():
+            if batch_size is None:
+                batch_size = self.config.max_concurrent_requests
+            
             self.logger.info(
-                f"Fetching candles for {len(markets)} markets",
-                data={"markets": markets, "unit": unit, "count": count}
+                f"Fetching candles for {len(markets)} markets in batches of {batch_size}",
+                data={
+                    "total_markets": len(markets), 
+                    "batch_size": batch_size,
+                    "batch_delay": batch_delay,
+                    "unit": unit, 
+                    "count": count
+                }
             )
             
-            # Create tasks for concurrent requests
-            tasks = [
-                self.get_candles(market, unit, count)
-                for market in markets
-            ]
-            
-            # Execute concurrently
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # Process results
             candle_data = {}
-            for market, result in zip(markets, results):
-                if isinstance(result, Exception):
-                    self.logger.error(
-                        f"Failed to fetch candles for {market}",
-                        data={"market": market, "error": str(result)}
-                    )
-                else:
-                    candle_data[market] = result
+            successful_count = 0
             
+            # Process markets in batches to avoid rate limiting
+            for i in range(0, len(markets), batch_size):
+                batch_markets = markets[i:i + batch_size]
+                batch_num = (i // batch_size) + 1
+                total_batches = (len(markets) + batch_size - 1) // batch_size
+                
+                self.logger.debug(
+                    f"Processing batch {batch_num}/{total_batches} ({len(batch_markets)} markets)",
+                    data={"batch_markets": batch_markets}
+                )
+                
+                # Create tasks for batch
+                tasks = [
+                    self.get_candles(market, unit, count)
+                    for market in batch_markets
+                ]
+                
+                try:
+                    # Execute batch concurrently
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    
+                    # Process batch results
+                    for market, result in zip(batch_markets, results):
+                        if isinstance(result, Exception):
+                            self.logger.error(
+                                f"Failed to fetch candles for {market}",
+                                data={"market": market, "error": str(result)}
+                            )
+                        else:
+                            candle_data[market] = result
+                            successful_count += 1
+                    
+                    # Wait between batches (except for the last batch)
+                    if i + batch_size < len(markets):
+                        self.logger.debug(f"Waiting {batch_delay}s before next batch")
+                        await asyncio.sleep(batch_delay)
+                        
+                except Exception as e:
+                    self.logger.error(
+                        f"Batch {batch_num} failed completely: {e}",
+                        data={"batch_markets": batch_markets, "error": str(e)}
+                    )
+            
+            success_rate = (successful_count / len(markets)) * 100 if markets else 0
             self.logger.info(
-                f"Successfully fetched candles for {len(candle_data)}/{len(markets)} markets",
-                data={"successful_markets": len(candle_data), "total_markets": len(markets)}
+                f"Candle fetch completed: {successful_count}/{len(markets)} markets ({success_rate:.1f}% success)",
+                data={
+                    "successful_markets": successful_count, 
+                    "total_markets": len(markets),
+                    "success_rate": success_rate
+                }
             )
             
             return candle_data

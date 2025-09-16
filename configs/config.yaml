@@ -2,15 +2,16 @@
 # Based on requirement.md Section 7: Basic Parameters
 # All thresholds and parameters can be tuned without redeployment
 
-# Exchange Configuration
+# Exchange Configuration (Rate Limit Optimized)
 exchange:
   base_url: https://api.upbit.com
   websocket_url: wss://api.upbit.com/websocket/v1
   timeout: 30
   max_retries: 3
-  retry_backoff: 2.0
+  retry_backoff: 3.0  # Increased for better rate limiting
+  max_concurrent_requests: 3  # Conservative limit to avoid rate limiting
 
-# Market Symbols Configuration  
+# Market Symbols Configuration (Rate Limit Optimized)
 symbols:
   # Core symbols for RS calculation and monitoring
   core: 
@@ -20,7 +21,34 @@ symbols:
   # Market filtering rules
   exclude_warning: true
   exclude_newly_listed_days: 7
-  min_volume_krw: 1000000000  # 10억원 이상 일거래량
+  min_volume_krw: 5000000000  # 50억원 이상 일거래량 (increased for filtering)
+  max_markets_to_scan: 50  # Maximum markets to scan (rate limit optimization)
+  # Priority markets (always included in scanning)
+  priority_markets:
+    - KRW-BTC
+    - KRW-ETH
+    - KRW-SOL
+    - KRW-ADA
+    - KRW-DOT
+    - KRW-AVAX
+    - KRW-MATIC
+    - KRW-ATOM
+    - KRW-LINK
+    - KRW-XRP
+    - KRW-NEAR
+    - KRW-UNI
+    - KRW-MANA
+    - KRW-SAND
+    - KRW-CRO
+    - KRW-SHIB
+    - KRW-DOGE
+    - KRW-TRX
+    - KRW-ETC
+    - KRW-BCH
+    - KRW-LTC
+    - KRW-EOS
+    - KRW-XLM
+    - KRW-VET
 
 # Scanner Configuration (FR-4: Candidate Scoring & Selection)
 scanner:
