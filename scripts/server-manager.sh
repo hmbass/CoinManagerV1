@@ -103,10 +103,10 @@ start_trading_system() {
     if [ "$TRADING_MODE" = "live" ]; then
         log_message "WARN" "⚠️  LIVE TRADING MODE - Real money will be used!"
         log_message "INFO" "Starting live trading system..."
-        nohup python3 -m src.app run --live > "$TRADING_LOG" 2>&1 &
+        nohup python3 -m src.app run --mode live > "$TRADING_LOG" 2>&1 &
     else
         log_message "INFO" "📄 Paper trading mode - Safe simulation"
-        nohup python3 -m src.app run --paper > "$TRADING_LOG" 2>&1 &
+        nohup python3 -m src.app run --mode paper > "$TRADING_LOG" 2>&1 &
     fi
     
     echo $! > "$LOG_DIR/trading.pid"

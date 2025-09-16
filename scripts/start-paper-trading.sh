@@ -149,7 +149,7 @@ echo -e "${NC}"
 log_message "INFO" "Launching trading system..."
 
 # Background execution with logging
-nohup python3 -m src.app run --paper > "$LOG_DIR/paper_trading.log" 2>&1 &
+nohup python3 -m src.app run --mode paper > "$LOG_DIR/paper_trading.log" 2>&1 &
 TRADING_PID=$!
 
 # Save PID
