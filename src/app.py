@@ -235,14 +235,15 @@ def run(mode: str, config: Optional[str], duration: int):
                     console.print("🛡️  [green]Live trading cancelled - wise choice![/green]")
                     return
             
+            # Initialize app first
+            await app.initialize()
+            
             # Load custom config if provided
             if config:
                 app.config = load_config(config)
             
             # Override trading mode in environment config
             app.env_config.trading_mode = mode
-            
-            await app.initialize()
             
             # Initialize trading system
             from .trading_system import TradingSystem
