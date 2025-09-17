@@ -103,6 +103,9 @@ class TradingSystem:
             banned_markets=[]
         )
         
+        # Paper trading mode flag
+        self.is_paper_trading = env_config.trading_mode == 'paper'
+        
         # Control flags
         self.should_stop = False
         self.pause_trading = False

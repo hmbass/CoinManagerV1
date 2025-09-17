@@ -1,0 +1,203 @@
+# Live Trading Configuration (Real Money)
+# ⚠️  WARNING: This configuration is for REAL TRADING with REAL MONEY
+# Please review all settings carefully before use
+
+# Exchange Configuration (Production Ready)
+exchange:
+  base_url: https://api.upbit.com
+  websocket_url: wss://api.upbit.com/websocket/v1
+  timeout: 30
+  max_retries: 3
+  retry_backoff: 3.0
+  max_concurrent_requests: 3  # Conservative for stability
+
+# Market Symbols Configuration (Conservative Selection)
+symbols:
+  core: 
+    - KRW-BTC
+    - KRW-ETH  
+    - KRW-SOL
+  exclude_warning: true
+  exclude_newly_listed_days: 14  # More conservative - 2 weeks
+  min_volume_krw: 10000000000  # 100억원 이상 - higher volume requirement
+  max_markets_to_scan: 20  # Reduced markets for better focus
+  # Priority markets (high liquidity only)
+  priority_markets:
+    - KRW-BTC
+    - KRW-ETH
+    - KRW-SOL
+    - KRW-ADA
+    - KRW-DOT
+    - KRW-AVAX
+    - KRW-MATIC
+    - KRW-ATOM
+    - KRW-LINK
+    - KRW-XRP
+
+# Scanner Configuration (More Conservative)
+scanner:
+  candle_unit: 5
+  candle_count: 200
+  rvol_threshold: 2.5  # Higher threshold for live trading
+  rvol_window: 20
+  spread_bp_max: 3  # Tighter spread requirement (3bp)
+  rs_window_minutes: 60
+  rs_reference_symbol: KRW-BTC
+  trend:
+    use_vwap: true
+    ema_fast: 20
+    ema_slow: 50
+  depth_normalize: log
+  depth_levels: 5
+  score_weights:
+    rs: 0.4
+    rvol: 0.3
+    trend: 0.2
+    depth: 0.1
+  candidate_count: 2  # Only top 2 candidates
+  min_score: 0.6  # Higher minimum score
+
+# Signal Generation (Conservative Strategies)
+signals:
+  orb:
+    use: true
+    box_window: "09:00-10:00"
+    breakout_atr_mult: 0.15  # Higher confirmation threshold
+    volume_spike_mult: 2.0  # Higher volume requirement
+    volume_lookback: 20
+  svwap_pullback:
+    use: true
+    zone_atr_mult: 0.2  # Tighter entry zone
+    require_ema_alignment: true
+    min_pullback_pct: 0.5
+    max_pullback_pct: 1.5  # Smaller pullback range
+  sweep_reversal:
+    use: false  # Disabled for live trading (too risky)
+
+# Risk Management (Very Conservative)
+risk:
+  per_trade_risk_pct: 0.002  # 0.2% of account (reduced from 0.4%)
+  min_position_krw: 10000
+  max_position_krw: 300000  # Reduced max position size
+  daily_drawdown_stop_pct: 0.005  # -0.5% daily loss limit (tighter)
+  max_retries_per_setup: 1  # Only 1 retry allowed
+  same_symbol_consecutive_losses_stop: 1  # Stop after 1 loss per symbol
+  min_risk_reward_ratio: 1.5  # Higher R:R requirement
+  target_risk_reward_ratio: 2.0  # Target 2R
+
+# Order Execution (Production Ready)
+orders:
+  slippage_bp_max: 3  # Tighter slippage control
+  order_type: limit
+  time_in_force: IOC
+  min_order_krw: 5000
+  max_order_krw: 500000  # Reduced max order size
+  use_oco_simulation: true
+  fill_timeout_seconds: 180  # Shorter timeout (3 minutes)
+
+# Runtime Configuration
+runtime:
+  session_windows:
+    - "09:15-12:45"  # Shorter morning session (avoid opening volatility)
+    - "17:15-18:45"  # Shorter evening session
+  timezone: "Asia/Seoul"
+  scan_interval_minutes: 10  # Longer intervals for stability
+  signal_check_interval_seconds: 60  # Less frequent signal checks
+  market_data_refresh_minutes: 2
+  candle_refresh_seconds: 60
+  orderbook_refresh_seconds: 10
+  max_concurrent_requests: 5
+  websocket_ping_interval: 30
+  enable_data_cache: true
+  cache_ttl_minutes: 10
+  cache_max_size_mb: 50
+
+# Logging Configuration (Production)
+logging:
+  level: WARNING  # Only warnings and errors in production
+  format: json
+  files:
+    main: runtime/logs/live_trading.log
+    error: runtime/logs/live_error.log
+    debug: runtime/logs/live_debug.log
+    api: runtime/logs/live_api.log
+    orders: runtime/logs/live_orders.log
+  max_file_size_mb: 20  # Smaller log files
+  backup_count: 5
+  include_fields:
+    - timestamp
+    - level
+    - module
+    - message
+    - data
+
+# Reporting Configuration
+reporting:
+  output_dir: runtime/reports/live
+  daily_report:
+    enabled: true
+    time: "23:59"
+    include_charts: false
+  weekly_report:
+    enabled: true
+    day: sunday
+    time: "23:59"
+  trade_journal:
+    enabled: true
+    include_screenshots: false
+  metrics:
+    - pnl_total
+    - pnl_daily
+    - win_rate
+    - avg_r_multiple
+    - max_drawdown
+    - sharpe_ratio
+    - profit_factor
+    - trades_count
+  alerts:
+    daily_loss_pct: 0.3  # Alert at -0.3% daily loss
+    consecutive_losses: 2
+    api_error_rate: 0.05
+
+# Monitoring & Health Checks
+monitoring:
+  health_check:
+    enabled: true
+    port: 8000
+    path: /health
+  metrics:
+    enabled: true
+    port: 8001
+    path: /metrics
+    interval_seconds: 120
+  alerts:
+    enabled: true  # Enable alerts for live trading
+    critical_only: true
+
+# Development & Testing (All Disabled for Live)
+development:
+  debug_mode: false
+  log_api_requests: false
+  log_api_responses: false
+  use_mock_data: false
+  bypass_rate_limits: false
+
+# Feature Flags (Safety First)
+features:
+  enable_machine_learning: false
+  enable_sentiment_analysis: false
+  enable_technical_indicators_extended: false
+  require_confirmation_live_trading: true  # Always require confirmation
+  enable_circuit_breakers: true
+  enable_position_limits: true
+  enable_websocket_streaming: true
+  enable_data_compression: true
+  enable_parallel_processing: false  # Disabled for stability
+
+# Version and Metadata
+metadata:
+  config_version: "1.0-live"
+  created: "2025-09-17"
+  author: "UDA Trading System"
+  description: "LIVE TRADING configuration - Real money trading with conservative settings"
+  risk_warning: "This configuration is for real money trading. Use at your own risk."

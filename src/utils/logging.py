@@ -464,7 +464,7 @@ def get_orders_logger() -> TradingLogger:
 
 
 def log_performance(func):
-    """Decorator to log function execution time.
+    """Decorator to log function execution time (only in DEBUG mode).
     
     Args:
         func: Function to wrap
@@ -473,6 +473,12 @@ def log_performance(func):
         Wrapped function with performance logging
     """
     def wrapper(*args, **kwargs):
+        # Check if DEBUG logging is enabled
+        root_logger = logging.getLogger()
+        if root_logger.level > logging.DEBUG:
+            # Skip performance logging in production
+            return func(*args, **kwargs)
+        
         logger = get_trading_logger(f"performance.{func.__module__}.{func.__name__}")
         
         start_time = datetime.now()
@@ -484,15 +490,17 @@ def log_performance(func):
             end_time = datetime.now()
             duration_ms = (end_time - start_time).total_seconds() * 1000
             
-            logger.info(
-                f"Function {func.__name__} completed",
-                data={
-                    "function": func.__name__,
-                    "module": func.__module__,
-                    "duration_ms": round(duration_ms, 2),
-                    "status": "success"
-                }
-            )
+            # Only log if duration is significant (>10ms)
+            if duration_ms > 10:
+                logger.debug(
+                    f"Function {func.__name__} completed",
+                    data={
+                        "function": func.__name__,
+                        "module": func.__module__,
+                        "duration_ms": round(duration_ms, 2),
+                        "status": "success"
+                    }
+                )
             
             return result
             
